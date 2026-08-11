@@ -1,0 +1,95 @@
+name: nested and self registry regression
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/nested-self-regression.yml
+      - scripts/nested-self-regression.py
+      - NESTED_SELF_REGRESSION.md
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/nested-self-regression.yml
+      - scripts/nested-self-regression.py
+      - NESTED_SELF_REGRESSION.md
+  workflow_dispatch:
+  schedule:
+    - cron: "41 7 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nested-self-regression-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ZED_CLI_SHA: 14bc2fb1bdc2b85e5545e60e70fc94f047188662
+  ZED_INTERFACES_SHA: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
+
+jobs:
+  registry-roundtrip:
+    name: ${{ matrix.os }} real registry roundtrip
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out the independent test harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: harness
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out merged zed-cli source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: zed-cli
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out compatible zed-interfaces source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: ${{ env.ZED_INTERFACES_SHA }}
+          path: zed-interfaces
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: zed-cli
+
+      - name: Build the exact merged Zed CLI
+        working-directory: zed-cli
+        run: cargo build --locked --bin zed
+
+      - name: Run real publish/install/frozen roundtrips
+        working-directory: zed-cli
+        run: python ../harness/scripts/nested-self-regression.py --zed-dir target/debug --depth 16
+
+      - name: Record immutable source pins
+        shell: bash
+        run: |
+          {
+            echo "## Nested/self registry regression"
+            echo
+            echo "- zed-cli: \`$ZED_CLI_SHA\`"
+            echo "- zed-interfaces: \`$ZED_INTERFACES_SHA\`"
+            echo "- platform: \`${{ matrix.os }}\`"
+            echo "- graph depth: \`16\`"
+            echo "- modes: normal symlink, frozen copy, cold frozen copy, frozen symlink"
+          } >> "$GITHUB_STEP_SUMMARY"
