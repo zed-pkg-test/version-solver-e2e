@@ -63,6 +63,11 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - name: Install pinned Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
@@ -90,6 +95,7 @@ jobs:
             echo "- zed-cli: \`$ZED_CLI_SHA\`"
             echo "- zed-interfaces: \`$ZED_INTERFACES_SHA\`"
             echo "- platform: \`${{ matrix.os }}\`"
+            echo "- Python: \`3.12\`"
             echo "- graph depth: \`16\`"
             echo "- modes: normal symlink, frozen copy, cold frozen copy, frozen symlink"
           } >> "$GITHUB_STEP_SUMMARY"
