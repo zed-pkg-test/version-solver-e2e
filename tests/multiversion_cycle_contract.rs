@@ -115,7 +115,10 @@ fn validate(graph: &ExactGraph) -> Result<(), String> {
             return Err(format!("edge target {} is absent", edge.to));
         }
         if edge.requirement.trim().is_empty() {
-            return Err(format!("edge {} -> {} has no requirement", edge.from, edge.to));
+            return Err(format!(
+                "edge {} -> {} has no requirement",
+                edge.from, edge.to
+            ));
         }
     }
     Ok(())
@@ -172,9 +175,7 @@ fn traverse(graph: &ExactGraph) -> Result<(Vec<NodeId>, Vec<BackEdge>), String> 
                     closing: edge,
                 });
             } else if !visited.contains(&edge.to) {
-                visit(
-                    graph, edge.to, visited, active, stack, order, back_edges,
-                );
+                visit(graph, edge.to, visited, active, stack, order, back_edges);
             }
         }
 
@@ -311,12 +312,15 @@ fn finite_plan_contains_one_root_link_and_one_link_per_edge() {
     let closing = plan
         .iter()
         .find(|item| {
-            item.link.ends_with("nodes/fixture-registry__fixture__b__0/root/zed_modules/fixture/a")
+            item.link
+                .ends_with("nodes/fixture-registry__fixture__b__0/root/zed_modules/fixture/a")
         })
         .unwrap();
-    assert!(closing
-        .target
-        .ends_with("nodes/fixture-registry__fixture__a__2/root"));
+    assert!(
+        closing
+            .target
+            .ends_with("nodes/fixture-registry__fixture__a__2/root")
+    );
     assert!(plan.iter().all(|item| !item.target.starts_with(&item.link)));
 }
 
@@ -396,11 +400,8 @@ mod unix_symlink_tests {
         let closing_link = temp
             .0
             .join("nodes/fixture-registry__fixture__b__0/root/zed_modules/fixture/a");
-        let canonical_a2 = fs::canonicalize(
-            temp.0
-                .join("nodes/fixture-registry__fixture__a__2/root"),
-        )
-        .unwrap();
+        let canonical_a2 =
+            fs::canonicalize(temp.0.join("nodes/fixture-registry__fixture__a__2/root")).unwrap();
         assert_eq!(fs::read_link(closing_link).unwrap(), canonical_a2);
     }
 
