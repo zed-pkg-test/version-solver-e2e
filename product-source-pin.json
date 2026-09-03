@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "ready": false,
-  "zed-pkg/zed-cli": "d5e771f4df8b16646c5da48230830213db5a62f3",
-  "note": "Set ready=true only after the exact-graph branch has assembled and passed its in-repository suite."
+  "ready": true,
+  "zed-pkg/zed-cli": "ebe42c6385aacdbfe3d37d17a253e900db1bc8a1",
+  "note": "Immutable product head for zed-pkg/zed-cli#315."
 }
