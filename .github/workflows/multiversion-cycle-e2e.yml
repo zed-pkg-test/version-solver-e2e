@@ -1,0 +1,73 @@
+name: multiversion circular dependency e2e
+
+on:
+  push:
+    branches:
+      - feat/den-3488-multiversion-cycle-e2e
+  pull_request:
+    paths:
+      - tests/multiversion_cycle_contract.rs
+      - .github/workflows/multiversion-cycle-e2e.yml
+      - MULTIVERSION_CYCLE_E2E.md
+      - product-source-pin.json
+
+permissions:
+  contents: read
+
+jobs:
+  independent-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt
+      - name: Format contract test
+        run: rustfmt --edition 2024 --check tests/multiversion_cycle_contract.rs
+      - name: Compile with warnings denied
+        run: rustc --edition 2024 -D warnings --test tests/multiversion_cycle_contract.rs -o /tmp/multiversion-cycle-contract
+      - name: Run exact-node and real-symlink tests
+        run: /tmp/multiversion-cycle-contract --nocapture
+
+  product-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Read immutable product source pin
+        id: pin
+        shell: bash
+        run: |
+          sha=$(python3 -c 'import json; print(json.load(open("product-source-pin.json"))["zed-pkg/zed-cli"])')
+          test "${#sha}" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ steps.pin.outputs.sha }}
+          path: product/zed-cli
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt, clippy
+      - name: Verify immutable checkout
+        working-directory: product/zed-cli
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+      - name: Run executable multiversion cycle tests
+        working-directory: product/zed-cli
+        run: cargo test --locked --test versioned_dependency_cycles -- --nocapture
+      - name: Run exact-node unit tests
+        working-directory: product/zed-cli
+        run: cargo test --locked --lib versioned_graph -- --nocapture
+      - name: Check product formatting
+        working-directory: product/zed-cli
+        run: cargo fmt --all -- --check
+      - name: Lint exact graph code
+        working-directory: product/zed-cli
+        run: cargo clippy --locked --all-targets -- -D warnings
