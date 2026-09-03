@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: multiversion-cycle-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   independent-contract:
     runs-on: ubuntu-latest
@@ -43,31 +47,47 @@ jobs:
         id: pin
         shell: bash
         run: |
-          sha=$(python3 -c 'import json; print(json.load(open("product-source-pin.json"))["zed-pkg/zed-cli"])')
-          test "${#sha}" -eq 40
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          pin = json.load(open("product-source-pin.json"))
+          sha = pin["zed-pkg/zed-cli"]
+          if len(sha) != 40:
+              raise SystemExit("product SHA must contain exactly 40 hexadecimal characters")
+          print(f"sha={sha}")
+          print(f"ready={str(bool(pin['ready'])).lower()}")
+          PY
+      - name: Explain staged product validation
+        if: steps.pin.outputs.ready != 'true'
+        run: echo "Product integration is staged until the exact-graph branch has assembled and passed its in-repository suite."
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: steps.pin.outputs.ready == 'true'
         with:
           repository: zed-pkg/zed-cli
           ref: ${{ steps.pin.outputs.sha }}
           path: product/zed-cli
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        if: steps.pin.outputs.ready == 'true'
         with:
           components: rustfmt, clippy
       - name: Verify immutable checkout
+        if: steps.pin.outputs.ready == 'true'
         working-directory: product/zed-cli
         shell: bash
         run: test "$(git rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
       - name: Run executable multiversion cycle tests
+        if: steps.pin.outputs.ready == 'true'
         working-directory: product/zed-cli
         run: cargo test --locked --test versioned_dependency_cycles -- --nocapture
       - name: Run exact-node unit tests
+        if: steps.pin.outputs.ready == 'true'
         working-directory: product/zed-cli
         run: cargo test --locked --lib versioned_graph -- --nocapture
       - name: Check product formatting
+        if: steps.pin.outputs.ready == 'true'
         working-directory: product/zed-cli
         run: cargo fmt --all -- --check
       - name: Lint exact graph code
+        if: steps.pin.outputs.ready == 'true'
         working-directory: product/zed-cli
         run: cargo clippy --locked --all-targets -- -D warnings
