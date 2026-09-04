@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
   "ready": true,
-  "zed-pkg/zed-cli": "2f48fb5abe50d2fd8727920023a244b569c954e9",
+  "zed-pkg/zed-cli": "8c0537e404f424cb648bede22db4334e8c3afca2",
   "note": "Immutable product head for zed-pkg/zed-cli#315."
 }
