@@ -91,26 +91,38 @@ jobs:
           exit 1
 
       - name: Client 1/9 — Rust
+        id: node_rust
+        continue-on-error: true
         shell: bash
         run: cd live-mutex/clients/rust && cargo run --example smoke
 
       - name: Client 2/9 — Python
+        id: node_python
+        continue-on-error: true
         shell: bash
-        run: cd live-mutex/clients/python && python3 -m live_mutex_client.smoke
+        run: cd live-mutex/clients/python && PYTHONPATH=src python3 -m live_mutex_client.smoke
 
       - name: Client 3/9 — Shell
+        id: node_shell
+        continue-on-error: true
         shell: bash
         run: ./live-mutex/clients/shell/smoke.sh
 
       - name: Client 4/9 — PowerShell
+        id: node_powershell
+        continue-on-error: true
         shell: bash
         run: pwsh ./live-mutex/clients/powershell/smoke.ps1
 
       - name: Client 5/9 — Go
+        id: node_go
+        continue-on-error: true
         shell: bash
         run: cd live-mutex/clients/go && go run ./cmd/smoke
 
       - name: Client 6/9 — Dart
+        id: node_dart
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -123,16 +135,47 @@ jobs:
             sh -lc 'dart pub get >/dev/null && dart run example/smoke.dart'
 
       - name: Client 7/9 — Java
+        id: node_java
+        continue-on-error: true
         shell: bash
         run: cd live-mutex/clients/java && mvn -q exec:java
 
       - name: Client 8/9 — C++
+        id: node_cpp
+        continue-on-error: true
         shell: bash
         run: cd live-mutex/clients/cpp && make test && make run
 
       - name: Client 9/9 — Gleam
+        id: node_gleam
+        continue-on-error: true
         shell: bash
         run: cd live-mutex/clients/gleam && LIVE_MUTEX_SMOKE=1 gleam test
+
+      - name: Require all 9 live-mutex clients to pass
+        if: always()
+        shell: bash
+        env:
+          RUST: ${{ steps.node_rust.outcome }}
+          PYTHON: ${{ steps.node_python.outcome }}
+          SHELL: ${{ steps.node_shell.outcome }}
+          POWERSHELL: ${{ steps.node_powershell.outcome }}
+          GO: ${{ steps.node_go.outcome }}
+          DART: ${{ steps.node_dart.outcome }}
+          JAVA: ${{ steps.node_java.outcome }}
+          CPP: ${{ steps.node_cpp.outcome }}
+          GLEAM: ${{ steps.node_gleam.outcome }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for name in RUST PYTHON SHELL POWERSHELL GO DART JAVA CPP GLEAM; do
+            outcome="${!name}"
+            printf '%-12s %s\n' "$name" "$outcome"
+            if [[ "$outcome" != "success" ]]; then
+              failed=1
+            fi
+          done
+          exit "$failed"
 
       - name: Node broker diagnostics
         if: always()
@@ -215,6 +258,8 @@ jobs:
           exit 1
 
       - name: Client 1/9 — TypeScript
+        id: rust_ts
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -223,36 +268,77 @@ jobs:
           pnpm smoke
 
       - name: Client 2/9 — Go
+        id: rust_go
+        continue-on-error: true
         shell: bash
         run: cd live-mutex-rs/clients/go && go run ./cmd/smoke
 
       - name: Client 3/9 — Python
+        id: rust_python
+        continue-on-error: true
         shell: bash
         run: cd live-mutex-rs/clients/python && python3 -m unittest discover -s tests -p 'test_*.py' -q && python3 smoke.py
 
       - name: Client 4/9 — C++
+        id: rust_cpp
+        continue-on-error: true
         shell: bash
         run: cd live-mutex-rs/clients/cpp && make test && make run
 
       - name: Client 5/9 — Java
+        id: rust_java
+        continue-on-error: true
         shell: bash
         run: cd live-mutex-rs/clients/java && ./build.sh && java -cp out com.oresoftware.networkmutex.ProtocolTest && java -cp out com.oresoftware.networkmutex.Smoke
 
       - name: Client 6/9 — C#
+        id: rust_csharp
+        continue-on-error: true
         shell: bash
         run: dotnet run --project live-mutex-rs/clients/csharp
 
       - name: Client 7/9 — F#
+        id: rust_fsharp
+        continue-on-error: true
         shell: bash
         run: dotnet run --project live-mutex-rs/clients/fsharp
 
       - name: Client 8/9 — Shell
+        id: rust_shell
+        continue-on-error: true
         shell: bash
         run: ./live-mutex-rs/clients/shell/smoke.sh
 
       - name: Client 9/9 — PowerShell
+        id: rust_powershell
+        continue-on-error: true
         shell: bash
         run: pwsh ./live-mutex-rs/clients/powershell/smoke.ps1
+
+      - name: Require all 9 live-mutex-rs clients to pass
+        if: always()
+        shell: bash
+        env:
+          TYPESCRIPT: ${{ steps.rust_ts.outcome }}
+          GO: ${{ steps.rust_go.outcome }}
+          PYTHON: ${{ steps.rust_python.outcome }}
+          CPP: ${{ steps.rust_cpp.outcome }}
+          JAVA: ${{ steps.rust_java.outcome }}
+          CSHARP: ${{ steps.rust_csharp.outcome }}
+          FSHARP: ${{ steps.rust_fsharp.outcome }}
+          SHELL: ${{ steps.rust_shell.outcome }}
+          POWERSHELL: ${{ steps.rust_powershell.outcome }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for name in TYPESCRIPT GO PYTHON CPP JAVA CSHARP FSHARP SHELL POWERSHELL; do
+            outcome="${!name}"
+            printf '%-12s %s\n' "$name" "$outcome"
+            if [[ "$outcome" != "success" ]]; then
+              failed=1
+            fi
+          done
+          exit "$failed"
 
       - name: Rust broker diagnostics
         if: always()
