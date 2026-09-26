@@ -1,0 +1,591 @@
+name: Process isolation exact-head qualification
+
+on:
+  push:
+    branches:
+      - certify-proc-isolation-12-13-185
+  pull_request:
+    paths:
+      - 'carrier/process-isolation/**'
+      - '.github/workflows/process-isolation-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROC_LINUX_SHA: 28a29bbbd75acf4531e973d2c8ec92b68659375d
+  PROC_MACOS_SHA: b496a4b9d815d41684d4049508020395f763f665
+  COMPOSE_SHA: d93a4108849ba37bbca155a8bb679abd2ab8b60f
+
+jobs:
+  linux-pr12:
+    name: Task 4 - Linux external networking and failure cleanup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TEST_FLEET_READ_TOKEN: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+    steps:
+      - name: Require private-source read credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$TEST_FLEET_READ_TOKEN" ]] || {
+            echo 'TEST_FLEET_READ_TOKEN is required for exact private-source certification' >&2
+            exit 78
+          }
+      - name: Check out exact PR 12 head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/ores-proc-isolation-cli
+          ref: ${{ env.PROC_LINUX_SHA }}
+          token: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+          persist-credentials: false
+          path: source
+      - name: Set up Rust 1.88
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - name: Install Linux sandbox helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y apparmor-profiles apparmor-utils bubblewrap slirp4netns iproute2 iptables shellcheck curl
+          if [[ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || printf '0')" == '1' ]]; then
+            profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+            [[ -f "$profile" ]]
+            sudo install -m 0644 "$profile" /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          fi
+      - name: Compile, lint, and run contracts
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/linux/ores-proc-isolate.sh
+          shellcheck scripts/linux/ores-proc-isolate.sh
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --all-targets
+          cargo build --quiet --examples --bins
+      - name: Write strict external-network qualification policy
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/ores-pi-task4.yaml <<'YAML'
+          version: 1
+          defaults:
+            group: no-net
+          groups:
+            no-net:
+              network:
+                mode: none
+            external:
+              filesystem:
+                read_only:
+                  - /usr/bin/true
+              network:
+                mode: external
+                deny_loopback: true
+                deny_private_networks: true
+          processes:
+            true:
+              group: no-net
+              command: [/usr/bin/true]
+            passwd:
+              group: no-net
+              command: [/usr/bin/cat, /etc/passwd]
+            internet:
+              group: external
+              command: [/usr/bin/curl, --fail, --silent, --show-error, --head, https://example.com]
+            curl-flex:
+              group: external
+              command: [/usr/bin/curl, --fail, --silent, --show-error]
+            sleeper:
+              group: external
+              command: [/usr/bin/sleep, "60"]
+            nested-userns:
+              group: external
+              command: [/usr/bin/unshare, --user, --map-root-user, /usr/bin/true]
+          YAML
+      - name: Prove allowed egress and denied host boundaries
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          target/debug/ores-proc-isolation run true --config /tmp/ores-pi-task4.yaml
+          if target/debug/ores-proc-isolation run passwd --config /tmp/ores-pi-task4.yaml; then
+            echo 'sandbox unexpectedly read /etc/passwd' >&2
+            exit 1
+          fi
+          target/debug/ores-proc-isolation run internet --config /tmp/ores-pi-task4.yaml
+
+          target/debug/examples/loopback_fixture 127.0.0.1:18080 >/tmp/ores-pi-loopback.log 2>&1 &
+          loopback_server=$!
+          trap 'kill "$loopback_server" 2>/dev/null || true' EXIT
+          sleep 1
+          curl --fail --silent http://127.0.0.1:18080 >/dev/null
+          if target/debug/ores-proc-isolation run curl-flex --config /tmp/ores-pi-task4.yaml -- http://127.0.0.1:18080; then
+            echo 'sandbox unexpectedly reached host loopback' >&2
+            exit 1
+          fi
+          kill "$loopback_server" 2>/dev/null || true
+          wait "$loopback_server" 2>/dev/null || true
+          trap - EXIT
+
+          host_ip=$(ip -o -4 addr show scope global | awk 'NR==1 {split($4,a,"/"); print a[1]}')
+          [[ -n "$host_ip" ]]
+          target/debug/examples/loopback_fixture 0.0.0.0:18081 >/tmp/ores-pi-host.log 2>&1 &
+          host_server=$!
+          trap 'kill "$host_server" 2>/dev/null || true' EXIT
+          sleep 1
+          curl --fail --silent "http://${host_ip}:18081" >/dev/null
+          if target/debug/ores-proc-isolation run curl-flex --config /tmp/ores-pi-task4.yaml -- "http://${host_ip}:18081"; then
+            echo "sandbox unexpectedly reached host interface ${host_ip}" >&2
+            exit 1
+          fi
+          kill "$host_server" 2>/dev/null || true
+          wait "$host_server" 2>/dev/null || true
+          trap - EXIT
+
+          if target/debug/ores-proc-isolation run nested-userns --config /tmp/ores-pi-task4.yaml; then
+            echo 'tenant unexpectedly created a nested user namespace' >&2
+            exit 1
+          fi
+      - name: Kill network helper and prove fail-closed tenant cleanup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! pgrep -x slirp4netns >/dev/null
+          ! pgrep -x bwrap >/dev/null
+          target/debug/ores-proc-isolation run sleeper --config /tmp/ores-pi-task4.yaml >/tmp/ores-pi-helper-death.log 2>&1 &
+          wrapper=$!
+          slirp=''
+          for _ in $(seq 1 200); do
+            slirp=$(pgrep -x slirp4netns | head -n1 || true)
+            [[ -n "$slirp" ]] && break
+            kill -0 "$wrapper" 2>/dev/null || break
+            sleep 0.05
+          done
+          [[ -n "$slirp" ]] || { cat /tmp/ores-pi-helper-death.log >&2; exit 1; }
+          kill -KILL "$slirp"
+          for _ in $(seq 1 200); do
+            kill -0 "$wrapper" 2>/dev/null || break
+            sleep 0.05
+          done
+          if kill -0 "$wrapper" 2>/dev/null; then
+            echo 'wrapper survived required network-helper death' >&2
+            kill -KILL "$wrapper" 2>/dev/null || true
+            exit 1
+          fi
+          set +e
+          wait "$wrapper"
+          rc=$?
+          set -e
+          [[ "$rc" -eq 125 ]] || { cat /tmp/ores-pi-helper-death.log >&2; echo "expected rc 125, got $rc" >&2; exit 1; }
+          grep -q 'network helper exited while tenant was still running' /tmp/ores-pi-helper-death.log
+          ! pgrep -x slirp4netns >/dev/null
+          ! pgrep -x bwrap >/dev/null
+          ! compgen -G '/tmp/ores-pi-ipc.*' >/dev/null
+      - name: Kill tenant and prove network-helper cleanup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          target/debug/ores-proc-isolation run sleeper --config /tmp/ores-pi-task4.yaml >/tmp/ores-pi-tenant-death.log 2>&1 &
+          wrapper=$!
+          tenant=''
+          for _ in $(seq 1 200); do
+            tenant=$(ps -eo pid=,args= | awk '$2=="/usr/bin/sleep" && $3=="60" {print $1; exit}')
+            [[ -n "$tenant" ]] && break
+            kill -0 "$wrapper" 2>/dev/null || break
+            sleep 0.05
+          done
+          [[ -n "$tenant" ]] || { cat /tmp/ores-pi-tenant-death.log >&2; exit 1; }
+          kill -KILL "$tenant"
+          for _ in $(seq 1 200); do
+            kill -0 "$wrapper" 2>/dev/null || break
+            sleep 0.05
+          done
+          if kill -0 "$wrapper" 2>/dev/null; then
+            echo 'wrapper survived tenant death' >&2
+            kill -KILL "$wrapper" 2>/dev/null || true
+            exit 1
+          fi
+          set +e
+          wait "$wrapper"
+          rc=$?
+          set -e
+          [[ "$rc" -ne 0 ]]
+          ! pgrep -x slirp4netns >/dev/null
+          ! pgrep -x bwrap >/dev/null
+          ! compgen -G '/tmp/ores-pi-ipc.*' >/dev/null
+
+  macos-pr13:
+    name: Task 3 - same-user macOS Seatbelt boundary
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TEST_FLEET_READ_TOKEN: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+    steps:
+      - name: Require private-source read credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$TEST_FLEET_READ_TOKEN" ]] || exit 78
+      - name: Check out exact PR 13 head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/ores-proc-isolation-cli
+          ref: ${{ env.PROC_MACOS_SHA }}
+          token: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+          persist-credentials: false
+          path: source
+      - name: Set up Rust 1.88
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - name: Compile and run contract tests
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x /usr/bin/sandbox-exec
+          bash -n scripts/macos/ores-proc-isolate.sh
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --all-targets
+          cargo build --quiet --examples --bins
+      - name: Exercise same-user filesystem, process, child, and local-network boundary
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/ores-pi-workspace /tmp/ores-pi-outside /tmp/ores-pi-outside.txt
+          mkdir -p /tmp/ores-pi-workspace /tmp/ores-pi-outside
+          ln -s /tmp/ores-pi-outside /tmp/ores-pi-workspace/escape
+          cat > /tmp/ores-pi-task3.yaml <<'YAML'
+          version: 1
+          defaults:
+            group: no-net
+          groups:
+            no-net:
+              network:
+                mode: none
+            external-strict:
+              network:
+                mode: external
+                deny_loopback: true
+                deny_private_networks: true
+            local-dev:
+              filesystem:
+                read_only:
+                  - /usr/bin
+                  - /bin
+                read_write:
+                  - /tmp/ores-pi-workspace
+              network:
+                mode: local
+                deny_loopback: false
+                deny_private_networks: false
+          processes:
+            identity:
+              group: no-net
+              command: [/usr/bin/id, -u]
+            passwd:
+              group: no-net
+              command: [/bin/cat, /etc/passwd]
+            host-process-probe:
+              group: no-net
+              command: [/bin/kill, -0]
+            internet-strict:
+              group: external-strict
+              command: [/usr/bin/curl, --fail, --silent, --head, https://example.com]
+            local-writer:
+              group: local-dev
+              command: [/bin/sh, -c, "printf allowed > inside.txt"]
+              working_directory: /tmp/ores-pi-workspace
+            outside-writer:
+              group: local-dev
+              command: [/bin/sh, -c, "printf denied > /tmp/ores-pi-outside.txt"]
+              working_directory: /tmp/ores-pi-workspace
+            symlink-writer:
+              group: local-dev
+              command: [/bin/sh, -c, "printf denied > escape/pwned.txt"]
+              working_directory: /tmp/ores-pi-workspace
+            child-tool:
+              group: local-dev
+              command: [/bin/sh, -c, "/usr/bin/touch child-created.txt"]
+              working_directory: /tmp/ores-pi-workspace
+            local-curl:
+              group: local-dev
+              command: [/usr/bin/curl, --fail, --silent, http://127.0.0.1:18082]
+          YAML
+
+          actual=$(target/debug/ores-proc-isolation run identity --config /tmp/ores-pi-task3.yaml)
+          [[ "$actual" == "$(id -u)" ]]
+          if target/debug/ores-proc-isolation run passwd --config /tmp/ores-pi-task3.yaml; then exit 1; fi
+          sleep 30 & host_pid=$!
+          trap 'kill "$host_pid" 2>/dev/null || true' EXIT
+          if target/debug/ores-proc-isolation run host-process-probe --config /tmp/ores-pi-task3.yaml -- "$host_pid"; then exit 1; fi
+          kill -0 "$host_pid"
+          kill "$host_pid" 2>/dev/null || true
+          wait "$host_pid" 2>/dev/null || true
+          trap - EXIT
+          if target/debug/ores-proc-isolation run internet-strict --config /tmp/ores-pi-task3.yaml; then exit 1; fi
+          target/debug/ores-proc-isolation run local-writer --config /tmp/ores-pi-task3.yaml
+          [[ "$(cat /tmp/ores-pi-workspace/inside.txt)" == allowed ]]
+          target/debug/ores-proc-isolation run child-tool --config /tmp/ores-pi-task3.yaml
+          [[ -f /tmp/ores-pi-workspace/child-created.txt ]]
+          if target/debug/ores-proc-isolation run outside-writer --config /tmp/ores-pi-task3.yaml; then exit 1; fi
+          [[ ! -e /tmp/ores-pi-outside.txt ]]
+          if target/debug/ores-proc-isolation run symlink-writer --config /tmp/ores-pi-task3.yaml; then exit 1; fi
+          [[ ! -e /tmp/ores-pi-outside/pwned.txt ]]
+          target/debug/examples/loopback_fixture 127.0.0.1:18082 >/tmp/ores-pi-local.log 2>&1 & server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          sleep 1
+          target/debug/ores-proc-isolation run local-curl --config /tmp/ores-pi-task3.yaml >/dev/null
+
+  compose-pr185-with-pr13:
+    name: Task 3 - ores-compose full macOS workflow through isolation
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      TEST_FLEET_READ_TOKEN: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+    steps:
+      - name: Require private-source read credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$TEST_FLEET_READ_TOKEN" ]] || exit 78
+      - name: Check out exact process-isolation head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/ores-proc-isolation-cli
+          ref: ${{ env.PROC_MACOS_SHA }}
+          token: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+          persist-credentials: false
+          path: proc
+      - name: Check out exact ores-compose head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/ores-compose
+          ref: ${{ env.COMPOSE_SHA }}
+          token: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+          persist-credentials: false
+          path: compose
+      - name: Set up Rust 1.88
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.88.0
+      - name: Build exact binaries and run compose tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd proc && cargo build --quiet --bins)
+          (cd compose && cargo test --all-targets && cargo build --quiet --bins)
+      - name: Create instrumented real isolation launcher and two-service project
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ACTUAL_PROC_ISOLATION="$PWD/proc/target/debug/ores-proc-isolation"
+          export ISOLATION_LOG_DIR="$RUNNER_TEMP/isolation-policies"
+          mkdir -p "$ISOLATION_LOG_DIR"
+          cat > "$RUNNER_TEMP/ores-proc-isolation-carrier" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          args=("$@")
+          policy=''
+          for ((i=0; i<${#args[@]}; i++)); do
+            if [[ "${args[$i]}" == '--config' && $((i+1)) -lt ${#args[@]} ]]; then
+              policy=${args[$((i+1))]}
+              break
+            fi
+          done
+          [[ -n "$policy" && -f "$policy" ]]
+          cp "$policy" "$ISOLATION_LOG_DIR/policy-${GITHUB_RUN_ATTEMPT:-1}-$$-$(date +%s%N).yaml"
+          printf '%q ' "${args[@]}" >> "$ISOLATION_LOG_DIR/invocations.log"
+          printf '\n' >> "$ISOLATION_LOG_DIR/invocations.log"
+          exec "$ACTUAL_PROC_ISOLATION" "${args[@]}"
+          SH
+          chmod 0700 "$RUNNER_TEMP/ores-proc-isolation-carrier"
+
+          project="$RUNNER_TEMP/compose-isolation-project"
+          outside="$RUNNER_TEMP/compose-isolation-outside"
+          rm -rf "$project" "$outside"
+          mkdir -p "$project/alpha" "$project/beta" "$outside"
+          ln -s "$outside" "$project/alpha/escape"
+          ln -s "$outside" "$project/beta/escape"
+          cat > "$project/.ores-compose.yaml" <<YAML
+          schema_version: ores.compose.v1
+          project: isolation-e2e
+          services:
+            alpha:
+              runtime: host
+              working_dir: alpha
+              build:
+                - ["/bin/sh", "-c", "if /bin/cat /etc/passwd >/dev/null 2>&1; then exit 73; fi; printf build\\n >> build.ok"]
+              command: ["/bin/sh", "-c", "if /usr/bin/touch '$outside/alpha-outside'; then exit 71; fi; if /usr/bin/touch escape/alpha-pwned; then exit 72; fi; /bin/sh -c 'printf child\\n >> child.ok'; printf start\\n >> start.ok; printf %s \\$\\$ > service.pid; exec /bin/sleep 30"]
+              healthcheck:
+                command: ["/bin/sh", "-c", "test -f build.ok && test -f start.ok && test -f child.ok && printf health\\n >> health.ok"]
+                interval_ms: 50
+                timeout_ms: 1000
+                retries: 20
+            beta:
+              runtime: host
+              working_dir: beta
+              build:
+                - ["/bin/sh", "-c", "if /bin/cat /etc/passwd >/dev/null 2>&1; then exit 73; fi; printf build\\n >> build.ok"]
+              command: ["/bin/sh", "-c", "if /usr/bin/touch '$outside/beta-outside'; then exit 71; fi; if /usr/bin/touch escape/beta-pwned; then exit 72; fi; /bin/sh -c 'printf child\\n >> child.ok'; printf start\\n >> start.ok; printf %s \\$\\$ > service.pid; exec /bin/sleep 30"]
+              healthcheck:
+                command: ["/bin/sh", "-c", "test -f build.ok && test -f start.ok && test -f child.ok && printf health\\n >> health.ok"]
+                interval_ms: 50
+                timeout_ms: 1000
+                retries: 20
+          YAML
+          printf '%s\n' "$project" > "$RUNNER_TEMP/project-path"
+          printf '%s\n' "$outside" > "$RUNNER_TEMP/outside-path"
+          printf '%s\n' "$RUNNER_TEMP/ores-proc-isolation-carrier" > "$RUNNER_TEMP/isolation-wrapper-path"
+      - name: Run build, start, child, health, shutdown, and restart through required isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          project=$(cat "$RUNNER_TEMP/project-path")
+          outside=$(cat "$RUNNER_TEMP/outside-path")
+          wrapper=$(cat "$RUNNER_TEMP/isolation-wrapper-path")
+          compose_bin="$PWD/compose/target/debug/ores-compose"
+          export ACTUAL_PROC_ISOLATION="$PWD/proc/target/debug/ores-proc-isolation"
+          export ISOLATION_LOG_DIR="$RUNNER_TEMP/isolation-policies"
+
+          run_cycle() {
+            local cycle=$1
+            (
+              cd "$project"
+              ORES_COMPOSE_PROCESS_ISOLATION=required \
+              ORES_PROC_ISOLATION_BIN="$wrapper" \
+              "$compose_bin" up
+            ) >"$RUNNER_TEMP/compose-cycle-${cycle}.log" 2>&1 &
+            local compose_pid=$!
+            local ready=0
+            for _ in $(seq 1 300); do
+              if [[ -f "$project/alpha/health.ok" && -f "$project/beta/health.ok" ]]; then
+                local alpha_count beta_count
+                alpha_count=$(wc -l < "$project/alpha/health.ok")
+                beta_count=$(wc -l < "$project/beta/health.ok")
+                if [[ "$alpha_count" -ge "$cycle" && "$beta_count" -ge "$cycle" ]]; then
+                  ready=1
+                  break
+                fi
+              fi
+              if ! kill -0 "$compose_pid" 2>/dev/null; then
+                cat "$RUNNER_TEMP/compose-cycle-${cycle}.log" >&2
+                return 1
+              fi
+              sleep 0.1
+            done
+            [[ "$ready" -eq 1 ]] || { cat "$RUNNER_TEMP/compose-cycle-${cycle}.log" >&2; return 1; }
+            grep -q 'process_isolation_enabled' "$RUNNER_TEMP/compose-cycle-${cycle}.log"
+            local alpha_pid beta_pid
+            alpha_pid=$(cat "$project/alpha/service.pid")
+            beta_pid=$(cat "$project/beta/service.pid")
+            kill -INT "$compose_pid"
+            for _ in $(seq 1 100); do
+              kill -0 "$compose_pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            if kill -0 "$compose_pid" 2>/dev/null; then
+              echo 'ores-compose did not shut down after SIGINT' >&2
+              kill -KILL "$compose_pid" 2>/dev/null || true
+              return 1
+            fi
+            wait "$compose_pid"
+            ! kill -0 "$alpha_pid" 2>/dev/null
+            ! kill -0 "$beta_pid" 2>/dev/null
+          }
+
+          run_cycle 1
+          run_cycle 2
+
+          [[ "$(wc -l < "$project/alpha/build.ok")" -ge 2 ]]
+          [[ "$(wc -l < "$project/beta/build.ok")" -ge 2 ]]
+          [[ "$(wc -l < "$project/alpha/start.ok")" -ge 2 ]]
+          [[ "$(wc -l < "$project/beta/start.ok")" -ge 2 ]]
+          [[ "$(wc -l < "$project/alpha/child.ok")" -ge 2 ]]
+          [[ "$(wc -l < "$project/beta/child.ok")" -ge 2 ]]
+          [[ ! -e "$outside/alpha-outside" ]]
+          [[ ! -e "$outside/beta-outside" ]]
+          [[ ! -e "$outside/alpha-pwned" ]]
+          [[ ! -e "$outside/beta-pwned" ]]
+
+          policy_count=$(find "$ISOLATION_LOG_DIR" -name 'policy-*.yaml' | wc -l | tr -d ' ')
+          [[ "$policy_count" -ge 12 ]] || { echo "expected >=12 isolation invocations across two cycles, got $policy_count" >&2; exit 1; }
+          grep -Rl 'build.ok' "$ISOLATION_LOG_DIR" >/dev/null
+          grep -Rl 'start.ok' "$ISOLATION_LOG_DIR" >/dev/null
+          grep -Rl 'health.ok' "$ISOLATION_LOG_DIR" >/dev/null
+          while IFS= read -r policy; do
+            grep -q 'mode: local' "$policy"
+            grep -q 'read_write:' "$policy"
+            grep -q 'working_directory:' "$policy"
+            ! grep -Eq '^[[:space:]]+(uid|gid|user):' "$policy"
+            ! grep -q 'sudo' "$policy"
+          done < <(find "$ISOLATION_LOG_DIR" -name 'policy-*.yaml' -print)
+          ! compgen -G '/tmp/ores-compose-isolation-*.yaml' >/dev/null
+      - name: Prove required, auto, and off selection are observable and predictable
+        shell: bash
+        run: |
+          set -euo pipefail
+          compose_bin="$PWD/compose/target/debug/ores-compose"
+          project="$RUNNER_TEMP/compose-mode-project"
+          mkdir -p "$project/service"
+          cat > "$project/.ores-compose.yaml" <<'YAML'
+          schema_version: ores.compose.v1
+          project: mode-e2e
+          services:
+            service:
+              runtime: host
+              working_dir: service
+              command: ["/bin/sleep", "30"]
+              healthcheck:
+                command: ["/usr/bin/true"]
+                interval_ms: 50
+                timeout_ms: 1000
+                retries: 10
+          YAML
+
+          set +e
+          (cd "$project" && ORES_COMPOSE_PROCESS_ISOLATION=required ORES_PROC_ISOLATION_BIN="$project/missing" "$compose_bin" up) >"$RUNNER_TEMP/required-missing.log" 2>&1
+          required_rc=$?
+          set -e
+          [[ "$required_rc" -ne 0 ]]
+          grep -Eq 'not found|could not canonicalize|invalid ORES_PROC_ISOLATION_BIN' "$RUNNER_TEMP/required-missing.log"
+
+          run_direct_mode() {
+            local mode=$1
+            local log="$RUNNER_TEMP/${mode}.log"
+            if [[ "$mode" == auto ]]; then
+              (cd "$project" && env -u ORES_PROC_ISOLATION_BIN PATH=/usr/bin:/bin ORES_COMPOSE_PROCESS_ISOLATION=auto "$compose_bin" up) >"$log" 2>&1 &
+            else
+              (cd "$project" && PATH=/usr/bin:/bin ORES_COMPOSE_PROCESS_ISOLATION=off ORES_PROC_ISOLATION_BIN="$project/missing" "$compose_bin" up) >"$log" 2>&1 &
+            fi
+            local pid=$!
+            for _ in $(seq 1 100); do
+              if pgrep -P "$pid" -f '/bin/sleep 30' >/dev/null 2>&1 || grep -q 'service_started' "$log"; then break; fi
+              kill -0 "$pid" 2>/dev/null || { cat "$log" >&2; return 1; }
+              sleep 0.1
+            done
+            ! grep -q 'process_isolation_enabled' "$log"
+            kill -INT "$pid"
+            for _ in $(seq 1 100); do
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            kill -0 "$pid" 2>/dev/null && { kill -KILL "$pid"; return 1; }
+            wait "$pid"
+          }
+          run_direct_mode auto
+          run_direct_mode off
