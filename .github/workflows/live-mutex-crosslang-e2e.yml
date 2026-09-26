@@ -1,0 +1,409 @@
+name: live-mutex-crosslang-e2e
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/live-mutex-crosslang-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-mutex-crosslang-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LIVE_MUTEX_NODE_SHA: 31af071fdf124f5d3756f6a2d6b9bbe2ea86bf5c
+  LIVE_MUTEX_RUST_SHA: c93d049dae10f82edf9141636024de3ba3392133
+
+jobs:
+  live-mutex-node-broker:
+    name: live-mutex / 9 client languages
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LMX_HOST: 127.0.0.1
+      LMX_PORT: "6970"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Erlang and Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          gleam-version: "1.16.0"
+
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@v1
+
+      - name: Check required hosted-runner toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in bash cargo c++ docker go java mvn node npm pwsh python3 rustc; do
+            command -v "$tool" >/dev/null || {
+              echo "missing required toolchain: $tool" >&2
+              exit 1
+            }
+          done
+          gleam --version
+          mkdir -p "$RUNNER_TEMP/lmx-node-results"
+
+      - name: Checkout pinned live-mutex source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/ORESoftware/live-mutex.git live-mutex
+          git -C live-mutex checkout --detach "$LIVE_MUTEX_NODE_SHA"
+          test "$(git -C live-mutex rev-parse HEAD)" = "$LIVE_MUTEX_NODE_SHA"
+
+      - name: Prove Node bounded model and implementation refinement
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex
+          node formal/model.mjs
+          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"a-1"},{"kind":"acquire","client":"b","requestId":"b-1"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
+          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.state.holder!=="b" || x.state.fence!==2) process.exit(1)' "$output"
+          npm install --ignore-scripts
+          npm run compile
+          npm run compile:check
+          npx --yes --package ts-node@10.9.2 -- ts-node --transpile-only test/fencing-external-effects-test.ts
+          npx --yes --package ts-node@10.9.2 -- ts-node --transpile-only test/acquire-many-queueing-test.ts
+          npx --yes --package ts-node@10.9.2 -- ts-node --transpile-only test/chaos-fuzz-extra-test.ts
+
+      - name: Build Node broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex
+          npm run compile
+
+      - name: Start Node broker and prove readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex
+          node -e 'const {Broker1}=require("./dist/main.js"); new Broker1({port:6970,host:"127.0.0.1"}).ensure().then(()=>console.log("broker-ready"));' > ../node-broker.log 2>&1 &
+          echo $! > ../node-broker.pid
+          cd ..
+          for attempt in $(seq 1 40); do
+            if python3 -c 'import socket; s=socket.create_connection(("127.0.0.1",6970),0.25); s.close()'; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat node-broker.log >&2 || true
+          exit 1
+
+      - name: Client 1/9 — Rust
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex/clients/rust
+          cargo run --example smoke
+          touch "$RUNNER_TEMP/lmx-node-results/rust.ok"
+
+      - name: Client 2/9 — Python
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex/clients/python
+          PYTHONPATH=src python3 -m live_mutex_client.smoke
+          touch "$RUNNER_TEMP/lmx-node-results/python.ok"
+
+      - name: Client 3/9 — Shell
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./live-mutex/clients/shell/smoke.sh
+          touch "$RUNNER_TEMP/lmx-node-results/shell.ok"
+
+      - name: Client 4/9 — PowerShell
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          pwsh ./live-mutex/clients/powershell/smoke.ps1
+          touch "$RUNNER_TEMP/lmx-node-results/powershell.ok"
+
+      - name: Client 5/9 — Go
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex/clients/go
+          go run ./cmd/smoke
+          touch "$RUNNER_TEMP/lmx-node-results/go.ok"
+
+      - name: Client 6/9 — Dart
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex/clients/dart
+          dart pub get
+          dart run example/smoke.dart
+          touch "$RUNNER_TEMP/lmx-node-results/dart.ok"
+
+      - name: Client 7/9 — Java
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex/clients/java
+          mvn -q compile exec:java
+          touch "$RUNNER_TEMP/lmx-node-results/java.ok"
+
+      - name: Client 8/9 — C++
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex/clients/cpp
+          make test
+          make run
+          touch "$RUNNER_TEMP/lmx-node-results/cpp.ok"
+
+      - name: Client 9/9 — Gleam
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex/clients/gleam
+          LIVE_MUTEX_SMOKE=1 gleam test
+          touch "$RUNNER_TEMP/lmx-node-results/gleam.ok"
+
+      - name: Require all 9 live-mutex clients to pass
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          for name in rust python shell powershell go dart java cpp gleam; do
+            if test -f "$RUNNER_TEMP/lmx-node-results/$name.ok"; then
+              printf '%-12s success\n' "$name"
+            else
+              printf '%-12s FAILED\n' "$name" >&2
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Node broker diagnostics
+        if: always()
+        shell: bash
+        run: |
+          cat node-broker.log || true
+          if test -f node-broker.pid; then
+            kill "$(cat node-broker.pid)" 2>/dev/null || true
+          fi
+
+  live-mutex-rust-broker:
+    name: live-mutex-rs / 9 client languages
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      LIVE_MUTEX_HOST: 127.0.0.1
+      LIVE_MUTEX_PORT: "6970"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Check required hosted-runner toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in bash cargo c++ dotnet go java javac node npm pwsh python3 rustc; do
+            command -v "$tool" >/dev/null || {
+              echo "missing required toolchain: $tool" >&2
+              exit 1
+            }
+          done
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm --version
+          mkdir -p "$RUNNER_TEMP/lmx-rust-results"
+
+      - name: Checkout pinned live-mutex-rs source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/ORESoftware/live-mutex-rs.git live-mutex-rs
+          git -C live-mutex-rs checkout --detach "$LIVE_MUTEX_RUST_SHA"
+          test "$(git -C live-mutex-rs rev-parse HEAD)" = "$LIVE_MUTEX_RUST_SHA"
+
+      - name: Prove Rust bounded model and implementation refinement
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex-rs
+          node formal/model.mjs
+          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"a-1"},{"kind":"acquire","client":"b","requestId":"b-1"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
+          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.state.holder!=="b" || x.state.fence!==2) process.exit(1)' "$output"
+          cargo test --locked --lib broker::tests::
+          cargo test --locked --lib queue::tests::
+          cargo test --locked --lib protocol::tests::
+          cargo test --locked --test fencing_external_effects
+          cargo test --locked --test chaos_fuzz_extra
+          cargo test --locked --test raft_cluster raft_lb_request_id_retry_after_failover_uses_replicated_cache_without_append -- --exact --test-threads=1
+
+      - name: Validate client protocol parity
+        shell: bash
+        run: cd live-mutex-rs && ./clients/check-protocol-parity.sh
+
+      - name: Build Rust broker
+        shell: bash
+        run: cd live-mutex-rs && cargo build --release --no-default-features --bin dd-rust-network-mutex
+
+      - name: Start Rust broker and prove readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./live-mutex-rs/target/release/dd-rust-network-mutex > rust-broker.log 2>&1 &
+          echo $! > rust-broker.pid
+          for attempt in $(seq 1 40); do
+            if python3 -c 'import socket; s=socket.create_connection(("127.0.0.1",6970),0.25); s.close()'; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat rust-broker.log >&2 || true
+          exit 1
+
+      - name: Client 1/9 — TypeScript
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex-rs/clients/ts
+          pnpm install --frozen-lockfile=false
+          pnpm smoke
+          touch "$RUNNER_TEMP/lmx-rust-results/typescript.ok"
+
+      - name: Client 2/9 — Go
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex-rs/clients/go
+          go run ./cmd/smoke
+          touch "$RUNNER_TEMP/lmx-rust-results/go.ok"
+
+      - name: Client 3/9 — Python
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex-rs/clients/python
+          python3 -m unittest discover -s tests -p 'test_*.py' -q
+          python3 smoke.py
+          touch "$RUNNER_TEMP/lmx-rust-results/python.ok"
+
+      - name: Client 4/9 — C++
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex-rs/clients/cpp
+          make test
+          make run
+          touch "$RUNNER_TEMP/lmx-rust-results/cpp.ok"
+
+      - name: Client 5/9 — Java
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex-rs/clients/java
+          ./build.sh
+          java -cp out com.oresoftware.networkmutex.ProtocolTest
+          java -cp out com.oresoftware.networkmutex.Smoke
+          touch "$RUNNER_TEMP/lmx-rust-results/java.ok"
+
+      - name: Client 6/9 — C#
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet run --project live-mutex-rs/clients/csharp
+          touch "$RUNNER_TEMP/lmx-rust-results/csharp.ok"
+
+      - name: Client 7/9 — F#
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet run --project live-mutex-rs/clients/fsharp
+          touch "$RUNNER_TEMP/lmx-rust-results/fsharp.ok"
+
+      - name: Client 8/9 — Shell
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./live-mutex-rs/clients/shell/smoke.sh
+          touch "$RUNNER_TEMP/lmx-rust-results/shell.ok"
+
+      - name: Client 9/9 — PowerShell
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          pwsh ./live-mutex-rs/clients/powershell/smoke.ps1
+          touch "$RUNNER_TEMP/lmx-rust-results/powershell.ok"
+
+      - name: Require all 9 live-mutex-rs clients to pass
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          for name in typescript go python cpp java csharp fsharp shell powershell; do
+            if test -f "$RUNNER_TEMP/lmx-rust-results/$name.ok"; then
+              printf '%-12s success\n' "$name"
+            else
+              printf '%-12s FAILED\n' "$name" >&2
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Rust broker diagnostics
+        if: always()
+        shell: bash
+        run: |
+          cat rust-broker.log || true
+          if test -f rust-broker.pid; then
+            kill "$(cat rust-broker.pid)" 2>/dev/null || true
+          fi
