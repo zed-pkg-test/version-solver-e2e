@@ -1,0 +1,140 @@
+name: live-mutex-node-dev-nine-client
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/live-mutex-node-dev-nine-client.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-mutex-node-dev-nine-client-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LIVE_MUTEX_NODE_SHA: 9cdf46dbd0768697d784be01ebbf0aade38bfa85
+  LMX_HOST: 127.0.0.1
+  LMX_PORT: "6970"
+
+jobs:
+  formal-and-nine-client-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.23.x"
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          otp-version: "27"
+          gleam-version: "1.16.0"
+
+      - name: Require all nine client toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in bash cargo c++ dart gleam go java mvn node npm pwsh python3 rustc; do
+            command -v "$tool" >/dev/null || {
+              echo "missing required toolchain: $tool" >&2
+              exit 1
+            }
+          done
+
+      - name: Checkout exact current Node dev head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/ORESoftware/live-mutex.git live-mutex
+          git -C live-mutex checkout --detach "$LIVE_MUTEX_NODE_SHA"
+          test "$(git -C live-mutex rev-parse HEAD)" = "$LIVE_MUTEX_NODE_SHA"
+          test "$(git -C live-mutex hash-object .github/workflows/nine-client-e2e.yml)" = "7e455dbb0e0625009d08fa9c2018f01309b87621"
+          test "$(git -C live-mutex hash-object .github/workflows/formal-model.yml)" = "4508c4cdf32831b07f90470a3bd5e74266b84325"
+
+      - name: Prove bounded formal lock/fencing model
+        working-directory: live-mutex
+        shell: bash
+        run: |
+          set -euo pipefail
+          node formal/model.mjs
+          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"a-1"},{"kind":"acquire","client":"b","requestId":"b-1"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
+          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.state.holder!=="b" || x.state.fence!==2) process.exit(1)' "$output"
+
+      - name: Build exact broker and run refinement compile check
+        working-directory: live-mutex
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --ignore-scripts
+          npm run compile:check
+          npm run compile
+
+      - name: Start broker and prove readiness
+        working-directory: live-mutex
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e 'const {Broker1}=require("./dist/main.js"); new Broker1({port:6970,host:"127.0.0.1"}).ensure().then(()=>console.log("broker-ready"));' > ../node-broker.log 2>&1 &
+          echo $! > ../node-broker.pid
+          cd ..
+          for attempt in $(seq 1 40); do
+            if bash -c 'exec 3<>/dev/tcp/127.0.0.1/6970' 2>/dev/null; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat node-broker.log >&2 || true
+          exit 1
+
+      - name: Client 1/9 - Rust
+        run: cd live-mutex/clients/rust && cargo run --example smoke
+
+      - name: Client 2/9 - Python
+        run: cd live-mutex/clients/python && PYTHONPATH=src python3 -m live_mutex_client.smoke
+
+      - name: Client 3/9 - Shell
+        run: ./live-mutex/clients/shell/smoke.sh
+
+      - name: Client 4/9 - PowerShell
+        run: pwsh ./live-mutex/clients/powershell/smoke.ps1
+
+      - name: Client 5/9 - Go
+        run: cd live-mutex/clients/go && go run ./cmd/smoke
+
+      - name: Client 6/9 - Dart
+        run: cd live-mutex/clients/dart && dart pub get && dart run example/smoke.dart
+
+      - name: Client 7/9 - Java
+        run: cd live-mutex/clients/java && mvn -q compile exec:java
+
+      - name: Client 8/9 - C++
+        run: cd live-mutex/clients/cpp && make test && make run
+
+      - name: Client 9/9 - Gleam
+        run: cd live-mutex/clients/gleam && LIVE_MUTEX_SMOKE=1 gleam test
+
+      - name: Broker diagnostics and cleanup
+        if: always()
+        shell: bash
+        run: |
+          cat node-broker.log || true
+          if test -f node-broker.pid; then
+            kill "$(cat node-broker.pid)" 2>/dev/null || true
+          fi
