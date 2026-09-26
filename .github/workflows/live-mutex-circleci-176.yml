@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  LIVE_MUTEX_CI_SHA: 128d90265ed431d293eed78470424556e78d9616
+  LIVE_MUTEX_CI_SHA: 47fe98c6da673008fb004885adabfd123006d40f
 
 jobs:
   reproduce:
@@ -37,6 +37,7 @@ jobs:
           git -C live-mutex checkout --detach "$LIVE_MUTEX_CI_SHA"
           test "$(git -C live-mutex rev-parse HEAD)" = "$LIVE_MUTEX_CI_SHA"
           test "$(git -C live-mutex hash-object scripts/circleci/run.sh)" = "1605580e86557d972e4b513a346f5444f36f7190"
+          test "$(git -C live-mutex hash-object tsconfig.json)" = "7c014b3f042bb4b6128e292897553c6c45e63f2e"
 
       - name: Reproduce CircleCI build command
         working-directory: live-mutex
