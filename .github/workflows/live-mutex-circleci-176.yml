@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  LIVE_MUTEX_CI_SHA: 7cb09de0dc08cbfa60a75e0448b1e98eed1220d9
+  LIVE_MUTEX_CI_SHA: 128d90265ed431d293eed78470424556e78d9616
 
 jobs:
   reproduce:
@@ -36,7 +36,7 @@ jobs:
           git clone --filter=blob:none https://github.com/ORESoftware/live-mutex.git live-mutex
           git -C live-mutex checkout --detach "$LIVE_MUTEX_CI_SHA"
           test "$(git -C live-mutex rev-parse HEAD)" = "$LIVE_MUTEX_CI_SHA"
-          test "$(git -C live-mutex hash-object scripts/circleci/run.sh)" = "27984b9bbe9df368919f41ae8e4fb5c1ff555589"
+          test "$(git -C live-mutex hash-object scripts/circleci/run.sh)" = "1605580e86557d972e4b513a346f5444f36f7190"
 
       - name: Reproduce CircleCI build command
         working-directory: live-mutex
