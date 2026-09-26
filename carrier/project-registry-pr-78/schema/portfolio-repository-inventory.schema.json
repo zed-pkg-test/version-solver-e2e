@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ORESoftware/project-registry/schema/portfolio-repository-inventory.schema.json",
+  "title": "Portfolio repository and dependency inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "authority", "generatedAt", "source", "repositories"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "authority": { "const": "ORESoftware/project-registry" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectContextsSha", "collectionMode", "owners"],
+      "properties": {
+        "projectContextsSha": { "$ref": "#/$defs/sha" },
+        "collectionMode": { "enum": ["github-app-installations", "fixture"] },
+        "owners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["account", "ownerId", "status"],
+            "properties": {
+              "account": { "type": "string", "minLength": 1 },
+              "ownerId": { "type": "integer", "minimum": 1 },
+              "installationId": { "type": "integer", "minimum": 1 },
+              "status": { "enum": ["inspected", "partial", "inaccessible", "not-installed"] },
+              "error": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/repository" }
+    }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "repoName": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repositoryId", "fullName", "owner", "name", "visibility", "archived", "defaultBranch", "inspectionStatus", "role", "contractAuthorities", "dependencies", "release", "languages", "testOrganizations", "deploymentConsumers", "prDependencies"],
+      "properties": {
+        "repositoryId": { "type": "integer", "minimum": 1 },
+        "fullName": { "$ref": "#/$defs/repoName" },
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "visibility": { "enum": ["public", "private", "internal"] },
+        "archived": { "type": "boolean" },
+        "defaultBranch": { "type": ["string", "null"] },
+        "headSha": { "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
+        "inspectionStatus": { "enum": ["inspected", "uninspected", "inaccessible", "archived"] },
+        "role": { "type": "string", "minLength": 1 },
+        "contractAuthorities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "authority", "path"],
+            "properties": {
+              "kind": { "enum": ["typespec", "json-schema", "protobuf", "wit", "sql", "other"] },
+              "authority": { "enum": ["authored", "generated", "external"] },
+              "path": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["repository", "relationship", "required"],
+            "properties": {
+              "repository": { "$ref": "#/$defs/repoName" },
+              "relationship": { "enum": ["build", "runtime", "dev", "test", "submodule", "deploy", "package", "contract"] },
+              "required": { "type": "boolean" },
+              "ref": { "type": "string" },
+              "commit": { "$ref": "#/$defs/sha" }
+            }
+          }
+        },
+        "release": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mechanism"],
+          "properties": {
+            "mechanism": { "enum": ["none", "github-release", "package-registry", "container", "git-submodule", "deployment", "unknown"] },
+            "channel": { "type": "string" }
+          }
+        },
+        "languages": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "testOrganizations": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "deploymentConsumers": { "type": "array", "items": { "$ref": "#/$defs/repoName" }, "uniqueItems": true },
+        "prDependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["repository", "prNumber", "headSha", "state"],
+            "properties": {
+              "repository": { "$ref": "#/$defs/repoName" },
+              "prNumber": { "type": "integer", "minimum": 1 },
+              "headSha": { "$ref": "#/$defs/sha" },
+              "state": { "enum": ["open", "merged", "closed", "blocked"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}
