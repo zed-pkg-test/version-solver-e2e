@@ -43,7 +43,10 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "27"
-          gleam-version: "1.9.0"
+          gleam-version: "1.16.0"
+
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@v1
 
       - name: Check required hosted-runner toolchains
         shell: bash
@@ -153,13 +156,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network=host \
-            -v "$PWD/live-mutex/clients/dart:/work" \
-            -w /work \
-            -e LMX_HOST=127.0.0.1 \
-            -e LMX_PORT=6970 \
-            dart:stable \
-            sh -lc 'dart pub get >/dev/null && dart run example/smoke.dart'
+          cd live-mutex/clients/dart
+          dart pub get
+          dart run example/smoke.dart
           touch "$RUNNER_TEMP/lmx-node-results/dart.ok"
 
       - name: Client 7/9 — Java
@@ -168,7 +167,7 @@ jobs:
         run: |
           set -euo pipefail
           cd live-mutex/clients/java
-          mvn -q exec:java
+          mvn -q compile exec:java
           touch "$RUNNER_TEMP/lmx-node-results/java.ok"
 
       - name: Client 8/9 — C++
