@@ -19,7 +19,7 @@ env:
   LMX_PORT: "6970"
 
 jobs:
-  nine-client-e2e:
+  formal-and-nine-client-e2e:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -66,13 +66,24 @@ jobs:
           git -C live-mutex checkout --detach "$LIVE_MUTEX_NODE_SHA"
           test "$(git -C live-mutex rev-parse HEAD)" = "$LIVE_MUTEX_NODE_SHA"
           test "$(git -C live-mutex hash-object .github/workflows/nine-client-e2e.yml)" = "7e455dbb0e0625009d08fa9c2018f01309b87621"
+          test "$(git -C live-mutex hash-object .github/workflows/formal-model.yml)" = "4508c4cdf32831b07f90470a3bd5e74266b84325"
 
-      - name: Build exact broker
+      - name: Prove bounded formal lock/fencing model
+        working-directory: live-mutex
+        shell: bash
+        run: |
+          set -euo pipefail
+          node formal/model.mjs
+          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"a-1"},{"kind":"acquire","client":"b","requestId":"b-1"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
+          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.state.holder!=="b" || x.state.fence!==2) process.exit(1)' "$output"
+
+      - name: Build exact broker and run refinement compile check
         working-directory: live-mutex
         shell: bash
         run: |
           set -euo pipefail
           npm install --ignore-scripts
+          npm run compile:check
           npm run compile
 
       - name: Start broker and prove readiness
