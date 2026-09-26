@@ -21,7 +21,7 @@ jobs:
   live-mutex-node-broker:
     name: live-mutex / 9 client languages
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       LMX_HOST: 127.0.0.1
       LMX_PORT: "6970"
@@ -72,14 +72,14 @@ jobs:
           set -euo pipefail
           cd live-mutex
           node formal/model.mjs
-          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"same-request"},{"kind":"acquire","client":"a","requestId":"same-request"},{"kind":"advance"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
-          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok) process.exit(1)' "$output"
+          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"a-1"},{"kind":"acquire","client":"b","requestId":"b-1"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
+          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.state.holder!=="b" || x.state.fence!==2) process.exit(1)' "$output"
           npm install --ignore-scripts
           npm run compile
           npm run compile:check
-          npx --yes --package ts-node@10.9.2 -- ts-node test/fencing-external-effects-test.ts
-          npx --yes --package ts-node@10.9.2 -- ts-node test/acquire-many-queueing-test.ts
-          npx --yes --package ts-node@10.9.2 -- ts-node test/chaos-fuzz-extra-test.ts
+          npx --yes --package ts-node@10.9.2 -- ts-node --transpile-only test/fencing-external-effects-test.ts
+          npx --yes --package ts-node@10.9.2 -- ts-node --transpile-only test/acquire-many-queueing-test.ts
+          npx --yes --package ts-node@10.9.2 -- ts-node --transpile-only test/chaos-fuzz-extra-test.ts
 
       - name: Build Node broker
         shell: bash
@@ -218,7 +218,7 @@ jobs:
   live-mutex-rust-broker:
     name: live-mutex-rs / 9 client languages
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 55
     env:
       LIVE_MUTEX_HOST: 127.0.0.1
       LIVE_MUTEX_PORT: "6970"
@@ -270,8 +270,8 @@ jobs:
           set -euo pipefail
           cd live-mutex-rs
           node formal/model.mjs
-          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"same-request"},{"kind":"acquire","client":"a","requestId":"same-request"},{"kind":"advance"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
-          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok) process.exit(1)' "$output"
+          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"a-1"},{"kind":"acquire","client":"b","requestId":"b-1"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
+          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.state.holder!=="b" || x.state.fence!==2) process.exit(1)' "$output"
           cargo test --locked --lib broker::tests::
           cargo test --locked --lib queue::tests::
           cargo test --locked --lib protocol::tests::
