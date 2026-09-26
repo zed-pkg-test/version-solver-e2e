@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "linux_task_4": {
+      "repository": "ORESoftware/ores-proc-isolation-cli",
+      "pull_request": 12,
+      "commit": "28a29bbbd75acf4531e973d2c8ec92b68659375d"
+    },
+    "macos_task_3": {
+      "repository": "ORESoftware/ores-proc-isolation-cli",
+      "pull_request": 13,
+      "commit": "b496a4b9d815d41684d4049508020395f763f665"
+    },
+    "compose_task_3": {
+      "repository": "ORESoftware/ores-compose",
+      "pull_request": 185,
+      "commit": "d93a4108849ba37bbca155a8bb679abd2ab8b60f"
+    }
+  },
+  "evidence_policy": "Exact private source commits are checked out with TEST_FLEET_READ_TOKEN. This carrier supplements source-repository required checks and never overrides them."
+}
