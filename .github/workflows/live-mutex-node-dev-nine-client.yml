@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  LIVE_MUTEX_NODE_SHA: 9cdf46dbd0768697d784be01ebbf0aade38bfa85
+  LIVE_MUTEX_NODE_SHA: b315705fd81d017294d42398846bf9b7b88f3653
   LMX_HOST: 127.0.0.1
   LMX_PORT: "6970"
 
@@ -65,7 +65,7 @@ jobs:
           git clone --filter=blob:none https://github.com/ORESoftware/live-mutex.git live-mutex
           git -C live-mutex checkout --detach "$LIVE_MUTEX_NODE_SHA"
           test "$(git -C live-mutex rev-parse HEAD)" = "$LIVE_MUTEX_NODE_SHA"
-          test "$(git -C live-mutex hash-object .github/workflows/nine-client-e2e.yml)" = "7e455dbb0e0625009d08fa9c2018f01309b87621"
+          test "$(git -C live-mutex hash-object .github/workflows/nine-client-e2e.yml)" = "f82abccd474950a69c9704fde5ef753bad068fd3"
           test "$(git -C live-mutex hash-object .github/workflows/formal-model.yml)" = "4508c4cdf32831b07f90470a3bd5e74266b84325"
 
       - name: Prove bounded formal lock/fencing model
