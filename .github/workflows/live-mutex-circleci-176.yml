@@ -1,0 +1,43 @@
+name: live-mutex-circleci-176
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/live-mutex-circleci-176.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LIVE_MUTEX_CI_SHA: 7cb09de0dc08cbfa60a75e0448b1e98eed1220d9
+
+jobs:
+  reproduce:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Checkout exact live-mutex CI candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/ORESoftware/live-mutex.git live-mutex
+          git -C live-mutex checkout --detach "$LIVE_MUTEX_CI_SHA"
+          test "$(git -C live-mutex rev-parse HEAD)" = "$LIVE_MUTEX_CI_SHA"
+          test "$(git -C live-mutex hash-object scripts/circleci/run.sh)" = "27984b9bbe9df368919f41ae8e4fb5c1ff555589"
+
+      - name: Reproduce CircleCI build command
+        working-directory: live-mutex
+        run: ./scripts/circleci/run.sh
