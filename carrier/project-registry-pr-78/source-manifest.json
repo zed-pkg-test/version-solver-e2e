@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_repository": "ORESoftware/project-registry",
+  "source_pull_request": 78,
+  "source_head": "11559ec51706bd80d76e38c7ee942644bf9f8669",
+  "source_files": {
+    "src/portfolio-inventory.mjs": "b0ba3246a1211d2bfcedd34bf630c6b19c64b9f7",
+    "src/certification-evidence.mjs": "9a09990fe912f61babdfab4f6f8cb2f100501faa",
+    "schema/portfolio-repository-inventory.schema.json": "872bcd726fbaa66304395fe538cd17d8e1756731",
+    "schema/certification-evidence.schema.json": "79bd4344b40f27c2ee29036b436f6ddcff385dd1",
+    "schema/formal-evidence.schema.json": "f85b3eda76b0a2a64af8fe4f911cc871689a16d2"
+  },
+  "certification_scope": "supplemental cross-org mirror; does not replace source-repository required checks"
+}
