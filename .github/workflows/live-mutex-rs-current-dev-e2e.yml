@@ -1,0 +1,140 @@
+name: live-mutex-rs-current-dev-e2e
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/live-mutex-rs-current-dev-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-mutex-rs-current-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LIVE_MUTEX_RUST_SHA: 16dd4ec16327cc237eedfb051a77186a3dae38aa
+  LIVE_MUTEX_HOST: 127.0.0.1
+  LIVE_MUTEX_PORT: "6970"
+
+jobs:
+  formal-raft-and-nine-clients:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Require hosted toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in bash cargo c++ dotnet go java javac node npm pwsh python3 rustc; do
+            command -v "$tool" >/dev/null || {
+              echo "missing required toolchain: $tool" >&2
+              exit 1
+            }
+          done
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm --version
+
+      - name: Checkout exact current dev head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/ORESoftware/live-mutex-rs.git live-mutex-rs
+          git -C live-mutex-rs checkout --detach "$LIVE_MUTEX_RUST_SHA"
+          test "$(git -C live-mutex-rs rev-parse HEAD)" = "$LIVE_MUTEX_RUST_SHA"
+
+      - name: Prove formal, redirect, fencing, queue, protocol and Raft refinement
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex-rs
+          node formal/model.mjs
+          output=$(printf '%s\n' '{"actions":[{"kind":"acquire","client":"a","requestId":"a-1"},{"kind":"acquire","client":"b","requestId":"b-1"},{"kind":"release","client":"a","fence":1}]}' | node formal/model.mjs --json-stdin)
+          node -e 'const x=JSON.parse(process.argv[1]); if(!x.ok || x.state.holder!=="b" || x.state.fence!==2) process.exit(1)' "$output"
+          cargo test --locked --lib broker::tests::
+          cargo test --locked --lib queue::tests::
+          cargo test --locked --lib protocol::tests::
+          cargo test --locked --test fencing_external_effects
+          cargo test --locked --test chaos_fuzz_extra
+          cargo test --locked --test raft_cluster raft_lb_request_id_retry_after_failover_uses_replicated_cache_without_append -- --exact --test-threads=1
+          ./clients/check-protocol-parity.sh
+
+      - name: Build and start exact broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-mutex-rs
+          cargo build --release --no-default-features --bin dd-rust-network-mutex
+          ./target/release/dd-rust-network-mutex > ../rust-broker.log 2>&1 &
+          echo $! > ../rust-broker.pid
+          cd ..
+          for attempt in $(seq 1 40); do
+            if python3 -c 'import socket; s=socket.create_connection(("127.0.0.1",6970),0.25); s.close()'; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat rust-broker.log >&2 || true
+          exit 1
+
+      - name: Run all nine real client languages
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd live-mutex-rs/clients/ts
+            pnpm install --frozen-lockfile=false
+            pnpm smoke
+          )
+          (
+            cd live-mutex-rs/clients/go
+            go run ./cmd/smoke
+          )
+          (
+            cd live-mutex-rs/clients/python
+            python3 -m unittest discover -s tests -p 'test_*.py' -q
+            python3 smoke.py
+          )
+          (
+            cd live-mutex-rs/clients/cpp
+            make test
+            make run
+          )
+          (
+            cd live-mutex-rs/clients/java
+            ./build.sh
+            java -cp out com.oresoftware.networkmutex.ProtocolTest
+            java -cp out com.oresoftware.networkmutex.Smoke
+          )
+          dotnet run --project live-mutex-rs/clients/csharp
+          dotnet run --project live-mutex-rs/clients/fsharp
+          ./live-mutex-rs/clients/shell/smoke.sh
+          pwsh ./live-mutex-rs/clients/powershell/smoke.ps1
+
+      - name: Broker diagnostics
+        if: always()
+        shell: bash
+        run: |
+          cat rust-broker.log || true
+          if test -f rust-broker.pid; then
+            kill "$(cat rust-broker.pid)" 2>/dev/null || true
+          fi
