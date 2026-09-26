@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  LIVE_MUTEX_RUST_SHA: 63173f07715918024634264964efb697f230bacf
+  LIVE_MUTEX_RUST_SHA: adeab93d51c8ebe83b42504abfcf7dd372d7138f
   LIVE_MUTEX_HOST: 127.0.0.1
   LIVE_MUTEX_PORT: "6970"
 
