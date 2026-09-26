@@ -14,9 +14,9 @@ permissions:
   contents: read
 
 env:
-  PROC_LINUX_SHA: 28a29bbbd75acf4531e973d2c8ec92b68659375d
-  PROC_MACOS_SHA: b496a4b9d815d41684d4049508020395f763f665
-  COMPOSE_SHA: d93a4108849ba37bbca155a8bb679abd2ab8b60f
+  PROC_LINUX_SHA: 83c69f7599e4da210dfa7838a9a516b7f38a4d64
+  PROC_MACOS_SHA: 83c69f7599e4da210dfa7838a9a516b7f38a4d64
+  COMPOSE_SHA: 6069c51b64143b5a3528d5e6e494a0b32aa97bf2
 
 jobs:
   linux-pr12:
@@ -34,7 +34,7 @@ jobs:
             echo 'TEST_FLEET_READ_TOKEN is required for exact private-source certification' >&2
             exit 78
           }
-      - name: Check out exact PR 12 head
+      - name: Check out current merged Linux isolation head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ORESoftware/ores-proc-isolation-cli
@@ -237,7 +237,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$TEST_FLEET_READ_TOKEN" ]] || exit 78
-      - name: Check out exact PR 13 head
+      - name: Check out current merged macOS isolation head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ORESoftware/ores-proc-isolation-cli
@@ -352,7 +352,7 @@ jobs:
           target/debug/ores-proc-isolation run local-curl --config /tmp/ores-pi-task3.yaml >/dev/null
 
   compose-pr185-with-pr13:
-    name: Task 3 - ores-compose full macOS workflow through isolation
+    name: Task 3 - ores-compose #195 full macOS workflow through isolation
     runs-on: macos-15
     timeout-minutes: 35
     env:
