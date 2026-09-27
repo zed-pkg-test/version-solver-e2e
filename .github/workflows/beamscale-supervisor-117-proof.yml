@@ -1,0 +1,194 @@
+name: BeamScale supervisor #117 exact-tree proof
+
+on:
+  pull_request:
+  push:
+    branches:
+      - proof/beamscale-117-current-main-tests
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BASE_SOURCE_SHA: a701fdada843424e00874e64ed209abd96442385
+      TARGET_SOURCE_SHA: ec5f4e57a673df6644dde9ba99a6cf98c8f90d20
+      TARGET_TREE_SHA: f4e99bef744317a9e3b1677f133e5700f485e837
+    steps:
+      - name: Check out proof carrier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reconstruct and verify exact BeamScale target tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import shutil
+
+          base_commit = "a701fdada843424e00874e64ed209abd96442385"
+          target_commit = "ec5f4e57a673df6644dde9ba99a6cf98c8f90d20"
+          target_tree = "f4e99bef744317a9e3b1677f133e5700f485e837"
+          output = pathlib.Path("source")
+          if output.exists():
+              shutil.rmtree(output)
+
+          base_packs = sorted(pathlib.Path("carrier/beamscale-supervisor-109").glob("pack-*.json"))
+          extra_packs = sorted(pathlib.Path("carrier/beamscale-supervisor-117").glob("base-extra-*.json"))
+          if len(base_packs) != 9 or len(extra_packs) != 4:
+              raise SystemExit(
+                  f"expected 9 executable packs + 4 repository packs, got {len(base_packs)} + {len(extra_packs)}"
+              )
+
+          seen = {}
+          def git_blob_sha(data: bytes) -> str:
+              return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
+
+          def safe_path(raw: str) -> pathlib.PurePosixPath:
+              rel = pathlib.PurePosixPath(raw)
+              if rel.is_absolute() or ".." in rel.parts or "." in rel.parts:
+                  raise SystemExit(f"unsafe vendored path: {raw}")
+              return rel
+
+          def install(item, expected_commit):
+              rel = safe_path(item["path"])
+              if item["path"] in seen:
+                  raise SystemExit(f"duplicate vendored path: {item['path']}")
+              data = item["content"].encode("utf-8")
+              actual = git_blob_sha(data)
+              if actual != item["sha"]:
+                  raise SystemExit(
+                      f"Git blob mismatch for {item['path']}: expected {item['sha']} got {actual}"
+                  )
+              dest = output.joinpath(*rel.parts)
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              dest.write_bytes(data)
+              if item.get("mode") == "100755":
+                  dest.chmod(0o755)
+              seen[item["path"]] = (item["sha"], item.get("mode", "100644"), expected_commit)
+
+          for pack_path in [*base_packs, *extra_packs]:
+              pack = json.loads(pack_path.read_text(encoding="utf-8"))
+              if pack.get("source_repo") != "beamscale/bmscl-supervisor":
+                  raise SystemExit(f"wrong source repo in {pack_path}")
+              if pack.get("source_commit") != base_commit:
+                  raise SystemExit(f"wrong base source commit in {pack_path}")
+              for item in pack.get("files", []):
+                  install(item, base_commit)
+
+          if len(seen) != 140:
+              raise SystemExit(f"expected 140 base-tree files, reconstructed {len(seen)}")
+
+          overlay_path = pathlib.Path("carrier/beamscale-supervisor-117/overlay.json")
+          overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+          if overlay.get("source_repo") != "beamscale/bmscl-supervisor":
+              raise SystemExit("overlay source repository mismatch")
+          if overlay.get("source_commit") != target_commit:
+              raise SystemExit("overlay source commit mismatch")
+          if overlay.get("source_tree") != target_tree:
+              raise SystemExit("overlay target tree mismatch")
+
+          overlay_paths = []
+          for item in overlay.get("files", []):
+              rel = safe_path(item["path"])
+              if item["path"] not in seen:
+                  raise SystemExit(f"overlay path absent from base snapshot: {item['path']}")
+              data = item["content"].encode("utf-8")
+              actual = git_blob_sha(data)
+              if actual != item["sha"]:
+                  raise SystemExit(
+                      f"overlay Git blob mismatch for {item['path']}: expected {item['sha']} got {actual}"
+                  )
+              dest = output.joinpath(*rel.parts)
+              dest.write_bytes(data)
+              if item.get("mode") == "100755":
+                  dest.chmod(0o755)
+              else:
+                  dest.chmod(0o644)
+              seen[item["path"]] = (item["sha"], item.get("mode", "100644"), target_commit)
+              overlay_paths.append(item["path"])
+
+          expected_overlay = {
+              "test/bmscl_provenance_tests.erl",
+              "test/bmscl_supervisor_tests.erl",
+          }
+          if set(overlay_paths) != expected_overlay:
+              raise SystemExit(f"unexpected target overlay set: {sorted(overlay_paths)}")
+
+          print(json.dumps({
+              "base_source_commit": base_commit,
+              "target_source_commit": target_commit,
+              "target_tree_sha": target_tree,
+              "verified_files": len(seen),
+              "overlay_files": sorted(overlay_paths),
+          }, sort_keys=True))
+          PY
+          (
+            cd source
+            git init -q
+            git config core.filemode true
+            git add -f -A
+            actual_tree="$(git write-tree)"
+            test "$actual_tree" = "$TARGET_TREE_SHA" || {
+              echo "target Git tree mismatch: expected $TARGET_TREE_SHA got $actual_tree" >&2
+              exit 1
+            }
+          )
+      - name: Set up OTP, Rebar3, and Gleam
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          otp-version: '27.3'
+          rebar3-version: '3.24.0'
+          gleam-version: '1.18.0'
+      - name: Compile
+        working-directory: source
+        run: rebar3 compile
+      - name: EUnit
+        working-directory: source
+        run: rebar3 eunit
+      - name: Xref
+        working-directory: source
+        run: rebar3 xref
+      - name: Prove Hosted Gleam ABI fixture
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd test/fixtures/hosted_abi
+          gleam build
+          beam_dir="$(dirname "$(find build -type f -name worker.beam -print -quit)")"
+          test -n "$beam_dir"
+          erl -noshell -pa "$beam_dir" -eval '
+            Request = {request, <<"POST">>, <<"/abi">>,
+                       [{<<"content-type">>, <<"application/octet-stream">>}],
+                       <<0,1,2>>},
+            Context = {context,
+                       {cluster_capability, <<"cluster">>},
+                       {some, {http_capability, <<"http">>}},
+                       {log_capability, <<"log">>},
+                       none,
+                       123},
+            {response, 201, Headers, <<0,1,2>>} = worker:handle(Request, Context),
+            true = lists:member({<<"x-method">>, <<"POST">>}, Headers),
+            true = lists:member({<<"x-url">>, <<"/abi">>}, Headers),
+            true = lists:member({<<"x-capabilities">>, <<"http-only">>}, Headers),
+            true = lists:member({<<"x-deadline">>, <<"123">>}, Headers),
+            halt(0).'
+      - name: Build self-contained OTP release
+        working-directory: source
+        run: rebar3 release
+      - name: Smoke self-contained release files
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rel=_build/default/rel/bmscl_supervisor
+          test -x "$rel/bin/bmscl_supervisor"
+          test -f "$rel/releases/0.1.0/start.boot"
+          test -n "$(find "$rel" -path '*/erts-*/bin/beam.smp' -type f -print -quit)"
