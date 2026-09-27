@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      TARGET_SOURCE_SHA: c19bbf9eabd614b40818a0a4b7388b586d9f4e75
-      TARGET_TREE_SHA: a23ed6ffbb43ea6945c028312388884ad813bea3
+      TARGET_SOURCE_SHA: 12273d65404e69e1561e89bdefa9984aa409e708
+      TARGET_TREE_SHA: 67ca6e15a15d18deb7f4e2332b9ea9473c746f8c
       EXPECTED_REBAR_LOCK_SHA256: 74120b0e08e986fb238e3787468970c4938fce0982d4eb6b6ff51001e6a0341a
     steps:
       - name: Check out proof carrier
@@ -34,8 +34,10 @@ jobs:
 
           const baseCommit = 'a701fdada843424e00874e64ed209abd96442385';
           const repairCommit = 'ec5f4e57a673df6644dde9ba99a6cf98c8f90d20';
-          const targetCommit = 'c19bbf9eabd614b40818a0a4b7388b586d9f4e75';
-          const targetTree = 'a23ed6ffbb43ea6945c028312388884ad813bea3';
+          const lockCommit = 'c19bbf9eabd614b40818a0a4b7388b586d9f4e75';
+          const lockTree = 'a23ed6ffbb43ea6945c028312388884ad813bea3';
+          const targetCommit = '12273d65404e69e1561e89bdefa9984aa409e708';
+          const targetTree = '67ca6e15a15d18deb7f4e2332b9ea9473c746f8c';
           const output = 'source';
 
           fs.rmSync(output, { recursive: true, force: true });
@@ -136,9 +138,9 @@ jobs:
             fs.readFileSync('carrier/beamscale-supervisor-120/overlay.json', 'utf8')
           );
           if (target.source_repo !== 'beamscale/bmscl-supervisor' ||
-              target.source_commit !== targetCommit ||
-              target.source_tree !== targetTree) {
-            throw new Error('target overlay identity mismatch');
+              target.source_commit !== lockCommit ||
+              target.source_tree !== lockTree) {
+            throw new Error('lock overlay identity mismatch');
           }
 
           const targetExpected = new Set([
@@ -160,7 +162,54 @@ jobs:
           }
 
           if (seen.size !== 141) {
-            throw new Error(`expected 141 target-tree files, reconstructed ${seen.size}`);
+            throw new Error(`expected 141 lock-tree files, reconstructed ${seen.size}`);
+          }
+
+          const sync = JSON.parse(
+            fs.readFileSync('carrier/beamscale-supervisor-120/main-sync.json', 'utf8')
+          );
+          if (sync.source_repo !== 'beamscale/bmscl-supervisor' ||
+              sync.source_commit !== targetCommit ||
+              sync.source_tree !== targetTree) {
+            throw new Error('main-sync overlay identity mismatch');
+          }
+
+          const syncExpected = new Set([
+            'docs/microvm-runtime-contract.md',
+            'src/bmscl_deployment_manager.erl',
+            'src/bmscl_execution_policy.erl',
+            'src/bmscl_host_lifecycle_socket.erl',
+            'src/bmscl_microvm_contract.erl',
+            'src/bmscl_microvm_nonce_registry.erl',
+            'src/bmscl_runtime.erl',
+            'src/bmscl_runtime_sup.erl',
+            'src/bmscl_supervisor.app.src',
+            'test/bmscl_experimental_runtime_tests.erl',
+            'test/bmscl_microvm_contract_tests.erl',
+            'test/bmscl_microvm_nonce_registry_tests.erl',
+            'test/bmscl_runtime_quiesce_tests.erl',
+          ]);
+          const syncActual = new Set((sync.files || []).map(x => x.path));
+          if (syncActual.size !== syncExpected.size ||
+              [...syncExpected].some(x => !syncActual.has(x))) {
+            throw new Error('unexpected main-sync overlay set');
+          }
+
+          const newSyncPaths = new Set([
+            'src/bmscl_host_lifecycle_socket.erl',
+            'src/bmscl_microvm_nonce_registry.erl',
+            'test/bmscl_microvm_nonce_registry_tests.erl',
+            'test/bmscl_runtime_quiesce_tests.erl',
+          ]);
+          for (const item of sync.files || []) {
+            install(item, {
+              requireExisting: !newSyncPaths.has(item.path),
+              requireAbsent: newSyncPaths.has(item.path),
+            });
+          }
+
+          if (seen.size !== 145) {
+            throw new Error(`expected 145 merged target-tree files, reconstructed ${seen.size}`);
           }
 
           process.stdout.write(JSON.stringify({
