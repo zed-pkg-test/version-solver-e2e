@@ -1,0 +1,127 @@
+name: ORES Compose #212 infra+app exact-head proof
+
+on:
+  pull_request:
+  push:
+    branches:
+      - proof/ores-compose-212-infra-app-20260927
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TEST_FLEET_READ_TOKEN: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+      SOURCE_SHA: 4e790084f09bc5e69a91859e86810070897ec6f9
+    steps:
+      - name: Require private-source read credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$TEST_FLEET_READ_TOKEN" ]] || {
+            echo 'TEST_FLEET_READ_TOKEN is required for exact private-source certification' >&2
+            exit 78
+          }
+
+      - name: Check out exact ores-compose candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/ores-compose
+          ref: 4e790084f09bc5e69a91859e86810070897ec6f9
+          token: ${{ secrets.TEST_FLEET_READ_TOKEN }}
+          persist-credentials: false
+          path: source
+
+      - name: Verify immutable source head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+
+      - name: Format
+        working-directory: source
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        working-directory: source
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Test
+        working-directory: source
+        run: cargo test --workspace --all-targets --all-features --locked
+
+      - name: Install PostgreSQL client
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          docker info >/dev/null
+
+      - name: Build exact ores-compose candidate
+        working-directory: source
+        run: cargo build --locked --bin ores-compose
+
+      - name: Prove Postgres infra to bootstrap to host app lifecycle
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/ores-compose-212-postgres.log"
+          : > "$log"
+
+          ./target/debug/ores-compose \
+            --skip-zed-pkg \
+            --skip-rpc-gen \
+            up tests/fixtures/oci-postgres/.ores-compose.yaml \
+            >"$log" 2>&1 &
+          pid=$!
+
+          cleanup() {
+            kill -INT "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            docker ps -aq --filter 'name=ores-oci-postgres-proof' | xargs -r docker rm -f || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 120); do
+            if grep -q '"event":"compose_ready"' "$log"; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat "$log"
+              echo 'ores-compose exited before compose_ready' >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [[ "$ready" != 1 ]]; then
+            cat "$log"
+            echo 'timed out waiting for compose_ready' >&2
+            exit 1
+          fi
+
+          curl --fail --silent http://127.0.0.1:18088/healthz | tee "$RUNNER_TEMP/app-health.json"
+          grep -q '"event":"service_completed".*"service":"bootstrap"' "$log"
+
+          kill -INT "$pid"
+          wait "$pid"
+          trap - EXIT
+
+          cat "$log"
+          if docker ps -a --format '{{.Names}}' | grep -q '^ores-oci-postgres-proof'; then
+            echo 'OCI resources leaked after clean shutdown' >&2
+            docker ps -a
+            exit 1
+          fi
