@@ -1,0 +1,254 @@
+name: BeamScale supervisor #120 immutable-lock proof
+
+on:
+  pull_request:
+  push:
+    branches:
+      - proof/beamscale-120-lock
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      TARGET_SOURCE_SHA: c19bbf9eabd614b40818a0a4b7388b586d9f4e75
+      TARGET_TREE_SHA: a23ed6ffbb43ea6945c028312388884ad813bea3
+      EXPECTED_REBAR_LOCK_SHA256: 74120b0e08e986fb238e3787468970c4938fce0982d4eb6b6ff51001e6a0341a
+    steps:
+      - name: Check out proof carrier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Reconstruct and verify exact BeamScale target tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+
+          const baseCommit = 'a701fdada843424e00874e64ed209abd96442385';
+          const repairCommit = 'ec5f4e57a673df6644dde9ba99a6cf98c8f90d20';
+          const targetCommit = 'c19bbf9eabd614b40818a0a4b7388b586d9f4e75';
+          const targetTree = 'a23ed6ffbb43ea6945c028312388884ad813bea3';
+          const output = 'source';
+
+          fs.rmSync(output, { recursive: true, force: true });
+
+          function packFiles(dir, prefix) {
+            return fs.readdirSync(dir)
+              .filter(name => name.startsWith(prefix) && name.endsWith('.json'))
+              .sort()
+              .map(name => path.join(dir, name));
+          }
+
+          const basePacks = packFiles('carrier/beamscale-supervisor-109', 'pack-');
+          const extraPacks = packFiles('carrier/beamscale-supervisor-117', 'base-extra-');
+          if (basePacks.length !== 9 || extraPacks.length !== 4) {
+            throw new Error(
+              `expected 9 executable packs + 4 repository packs, got ${basePacks.length} + ${extraPacks.length}`
+            );
+          }
+
+          const seen = new Map();
+
+          function gitBlobSha(data) {
+            const header = Buffer.from(`blob ${data.length}\0`, 'ascii');
+            return crypto.createHash('sha1').update(Buffer.concat([header, data])).digest('hex');
+          }
+
+          function validateRelative(raw) {
+            if (path.posix.isAbsolute(raw)) {
+              throw new Error(`unsafe vendored path: ${raw}`);
+            }
+            const parts = raw.split('/');
+            if (parts.length === 0 || parts.some(p => p === '' || p === '.' || p === '..')) {
+              throw new Error(`unsafe vendored path: ${raw}`);
+            }
+            return parts;
+          }
+
+          function install(item, { requireExisting = false, requireAbsent = false } = {}) {
+            const parts = validateRelative(item.path);
+            if (requireExisting && !seen.has(item.path)) {
+              throw new Error(`overlay path absent from base snapshot: ${item.path}`);
+            }
+            if (requireAbsent && seen.has(item.path)) {
+              throw new Error(`expected new path already exists: ${item.path}`);
+            }
+
+            const data = Buffer.from(item.content, 'utf8');
+            const actual = gitBlobSha(data);
+            if (actual !== item.sha) {
+              throw new Error(
+                `Git blob mismatch for ${item.path}: expected ${item.sha} got ${actual}`
+              );
+            }
+
+            const dest = path.join(output, ...parts);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.writeFileSync(dest, data);
+            fs.chmodSync(dest, item.mode === '100755' ? 0o755 : 0o644);
+            seen.set(item.path, { sha: item.sha, mode: item.mode || '100644' });
+          }
+
+          for (const packPath of [...basePacks, ...extraPacks]) {
+            const pack = JSON.parse(fs.readFileSync(packPath, 'utf8'));
+            if (pack.source_repo !== 'beamscale/bmscl-supervisor') {
+              throw new Error(`wrong source repo in ${packPath}`);
+            }
+            if (pack.source_commit !== baseCommit) {
+              throw new Error(`wrong base source commit in ${packPath}`);
+            }
+            for (const item of pack.files || []) {
+              if (seen.has(item.path)) throw new Error(`duplicate base path: ${item.path}`);
+              install(item);
+            }
+          }
+
+          if (seen.size !== 140) {
+            throw new Error(`expected 140 base-tree files, reconstructed ${seen.size}`);
+          }
+
+          const repair = JSON.parse(
+            fs.readFileSync('carrier/beamscale-supervisor-117/overlay.json', 'utf8')
+          );
+          if (repair.source_commit !== repairCommit) {
+            throw new Error('repair overlay commit mismatch');
+          }
+          const repairExpected = new Set([
+            'test/bmscl_provenance_tests.erl',
+            'test/bmscl_supervisor_tests.erl',
+          ]);
+          const repairActual = new Set((repair.files || []).map(x => x.path));
+          if (repairActual.size !== repairExpected.size ||
+              [...repairExpected].some(x => !repairActual.has(x))) {
+            throw new Error('unexpected repair overlay set');
+          }
+          for (const item of repair.files || []) install(item, { requireExisting: true });
+
+          const target = JSON.parse(
+            fs.readFileSync('carrier/beamscale-supervisor-120/overlay.json', 'utf8')
+          );
+          if (target.source_repo !== 'beamscale/bmscl-supervisor' ||
+              target.source_commit !== targetCommit ||
+              target.source_tree !== targetTree) {
+            throw new Error('target overlay identity mismatch');
+          }
+
+          const targetExpected = new Set([
+            '.github/workflows/ci.yml',
+            'rebar.config',
+            'rebar.lock',
+          ]);
+          const targetActual = new Set((target.files || []).map(x => x.path));
+          if (targetActual.size !== targetExpected.size ||
+              [...targetExpected].some(x => !targetActual.has(x))) {
+            throw new Error('unexpected target overlay set');
+          }
+
+          for (const item of target.files || []) {
+            install(item, {
+              requireExisting: item.path !== 'rebar.lock',
+              requireAbsent: item.path === 'rebar.lock',
+            });
+          }
+
+          if (seen.size !== 141) {
+            throw new Error(`expected 141 target-tree files, reconstructed ${seen.size}`);
+          }
+
+          process.stdout.write(JSON.stringify({
+            target_source_commit: targetCommit,
+            target_tree_sha: targetTree,
+            verified_files: seen.size,
+          }) + '\n');
+          NODE
+
+          (
+            cd source
+            git init -q
+            git config core.filemode true
+            git add -f -A
+            actual_tree="$(git write-tree)"
+            test "$actual_tree" = "$TARGET_TREE_SHA" || {
+              echo "target Git tree mismatch: expected $TARGET_TREE_SHA got $actual_tree" >&2
+              exit 1
+            }
+            actual_lock="$(sha256sum rebar.lock | awk '{print $1}')"
+            test "$actual_lock" = "$EXPECTED_REBAR_LOCK_SHA256" || {
+              echo "rebar.lock digest mismatch" >&2
+              exit 1
+            }
+            grep -Fq '495e74ada88d0876d7e438d53f11af767a9cdcc4' rebar.config
+            ! grep -Fq '{tag, "2.14.2"}' rebar.config
+          )
+
+      - name: Set up OTP, Rebar3, and Gleam
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          otp-version: '27.3'
+          rebar3-version: '3.24.0'
+          gleam-version: '1.18.0'
+
+      - name: Compile and prove lock replay is immutable
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rebar3 compile
+          git diff --exit-code -- rebar.lock
+          test "$(sha256sum rebar.lock | awk '{print $1}')" = "$EXPECTED_REBAR_LOCK_SHA256"
+
+      - name: EUnit
+        working-directory: source
+        run: rebar3 eunit
+
+      - name: Xref
+        working-directory: source
+        run: rebar3 xref
+
+      - name: Prove Hosted Gleam ABI fixture
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd test/fixtures/hosted_abi
+          gleam build
+          beam_dir="$(dirname "$(find build -type f -name worker.beam -print -quit)")"
+          test -n "$beam_dir"
+          erl -noshell -pa "$beam_dir" -eval '
+            Request = {request, <<"POST">>, <<"/abi">>,
+                       [{<<"content-type">>, <<"application/octet-stream">>}],
+                       <<0,1,2>>},
+            Context = {context,
+                       {cluster_capability, <<"cluster">>},
+                       {some, {http_capability, <<"http">>}},
+                       {log_capability, <<"log">>},
+                       none,
+                       123},
+            {response, 201, Headers, <<0,1,2>>} = worker:handle(Request, Context),
+            true = lists:member({<<"x-method">>, <<"POST">>}, Headers),
+            true = lists:member({<<"x-url">>, <<"/abi">>}, Headers),
+            true = lists:member({<<"x-capabilities">>, <<"http-only">>}, Headers),
+            true = lists:member({<<"x-deadline">>, <<"123">>}, Headers),
+            halt(0).'
+
+      - name: Build self-contained OTP release
+        working-directory: source
+        run: rebar3 release
+
+      - name: Smoke self-contained release files
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rel=_build/default/rel/bmscl_supervisor
+          test -x "$rel/bin/bmscl_supervisor"
+          test -f "$rel/releases/0.1.0/start.boot"
+          test -n "$(find "$rel" -path '*/erts-*/bin/beam.smp' -type f -print -quit)"
