@@ -26,109 +26,128 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import pathlib
-          import shutil
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
 
-          base_commit = "a701fdada843424e00874e64ed209abd96442385"
-          target_commit = "ec5f4e57a673df6644dde9ba99a6cf98c8f90d20"
-          target_tree = "f4e99bef744317a9e3b1677f133e5700f485e837"
-          output = pathlib.Path("source")
-          if output.exists():
-              shutil.rmtree(output)
+          const baseCommit = 'a701fdada843424e00874e64ed209abd96442385';
+          const targetCommit = 'ec5f4e57a673df6644dde9ba99a6cf98c8f90d20';
+          const targetTree = 'f4e99bef744317a9e3b1677f133e5700f485e837';
+          const output = 'source';
 
-          base_packs = sorted(pathlib.Path("carrier/beamscale-supervisor-109").glob("pack-*.json"))
-          extra_packs = sorted(pathlib.Path("carrier/beamscale-supervisor-117").glob("base-extra-*.json"))
-          if len(base_packs) != 9 or len(extra_packs) != 4:
-              raise SystemExit(
-                  f"expected 9 executable packs + 4 repository packs, got {len(base_packs)} + {len(extra_packs)}"
-              )
+          fs.rmSync(output, { recursive: true, force: true });
 
-          seen = {}
-          def git_blob_sha(data: bytes) -> str:
-              return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
-
-          def safe_path(raw: str) -> pathlib.PurePosixPath:
-              rel = pathlib.PurePosixPath(raw)
-              if rel.is_absolute() or ".." in rel.parts or "." in rel.parts:
-                  raise SystemExit(f"unsafe vendored path: {raw}")
-              return rel
-
-          def install(item, expected_commit):
-              rel = safe_path(item["path"])
-              if item["path"] in seen:
-                  raise SystemExit(f"duplicate vendored path: {item['path']}")
-              data = item["content"].encode("utf-8")
-              actual = git_blob_sha(data)
-              if actual != item["sha"]:
-                  raise SystemExit(
-                      f"Git blob mismatch for {item['path']}: expected {item['sha']} got {actual}"
-                  )
-              dest = output.joinpath(*rel.parts)
-              dest.parent.mkdir(parents=True, exist_ok=True)
-              dest.write_bytes(data)
-              if item.get("mode") == "100755":
-                  dest.chmod(0o755)
-              seen[item["path"]] = (item["sha"], item.get("mode", "100644"), expected_commit)
-
-          for pack_path in [*base_packs, *extra_packs]:
-              pack = json.loads(pack_path.read_text(encoding="utf-8"))
-              if pack.get("source_repo") != "beamscale/bmscl-supervisor":
-                  raise SystemExit(f"wrong source repo in {pack_path}")
-              if pack.get("source_commit") != base_commit:
-                  raise SystemExit(f"wrong base source commit in {pack_path}")
-              for item in pack.get("files", []):
-                  install(item, base_commit)
-
-          if len(seen) != 140:
-              raise SystemExit(f"expected 140 base-tree files, reconstructed {len(seen)}")
-
-          overlay_path = pathlib.Path("carrier/beamscale-supervisor-117/overlay.json")
-          overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
-          if overlay.get("source_repo") != "beamscale/bmscl-supervisor":
-              raise SystemExit("overlay source repository mismatch")
-          if overlay.get("source_commit") != target_commit:
-              raise SystemExit("overlay source commit mismatch")
-          if overlay.get("source_tree") != target_tree:
-              raise SystemExit("overlay target tree mismatch")
-
-          overlay_paths = []
-          for item in overlay.get("files", []):
-              rel = safe_path(item["path"])
-              if item["path"] not in seen:
-                  raise SystemExit(f"overlay path absent from base snapshot: {item['path']}")
-              data = item["content"].encode("utf-8")
-              actual = git_blob_sha(data)
-              if actual != item["sha"]:
-                  raise SystemExit(
-                      f"overlay Git blob mismatch for {item['path']}: expected {item['sha']} got {actual}"
-                  )
-              dest = output.joinpath(*rel.parts)
-              dest.write_bytes(data)
-              if item.get("mode") == "100755":
-                  dest.chmod(0o755)
-              else:
-                  dest.chmod(0o644)
-              seen[item["path"]] = (item["sha"], item.get("mode", "100644"), target_commit)
-              overlay_paths.append(item["path"])
-
-          expected_overlay = {
-              "test/bmscl_provenance_tests.erl",
-              "test/bmscl_supervisor_tests.erl",
+          function packFiles(dir, prefix) {
+            return fs.readdirSync(dir)
+              .filter(name => name.startsWith(prefix) && name.endsWith('.json'))
+              .sort()
+              .map(name => path.join(dir, name));
           }
-          if set(overlay_paths) != expected_overlay:
-              raise SystemExit(f"unexpected target overlay set: {sorted(overlay_paths)}")
 
-          print(json.dumps({
-              "base_source_commit": base_commit,
-              "target_source_commit": target_commit,
-              "target_tree_sha": target_tree,
-              "verified_files": len(seen),
-              "overlay_files": sorted(overlay_paths),
-          }, sort_keys=True))
-          PY
+          const basePacks = packFiles('carrier/beamscale-supervisor-109', 'pack-');
+          const extraPacks = packFiles('carrier/beamscale-supervisor-117', 'base-extra-');
+          if (basePacks.length !== 9 || extraPacks.length !== 4) {
+            throw new Error(
+              `expected 9 executable packs + 4 repository packs, got ${basePacks.length} + ${extraPacks.length}`
+            );
+          }
+
+          const seen = new Map();
+
+          function gitBlobSha(data) {
+            const header = Buffer.from(`blob ${data.length}\0`, 'ascii');
+            return crypto.createHash('sha1').update(Buffer.concat([header, data])).digest('hex');
+          }
+
+          function validateRelative(raw) {
+            if (path.posix.isAbsolute(raw)) {
+              throw new Error(`unsafe vendored path: ${raw}`);
+            }
+            const parts = raw.split('/');
+            if (parts.length === 0 || parts.some(p => p === '' || p === '.' || p === '..')) {
+              throw new Error(`unsafe vendored path: ${raw}`);
+            }
+            return parts;
+          }
+
+          function install(item, expectedCommit, allowReplace = false) {
+            const parts = validateRelative(item.path);
+            if (!allowReplace && seen.has(item.path)) {
+              throw new Error(`duplicate vendored path: ${item.path}`);
+            }
+            if (allowReplace && !seen.has(item.path)) {
+              throw new Error(`overlay path absent from base snapshot: ${item.path}`);
+            }
+
+            const data = Buffer.from(item.content, 'utf8');
+            const actual = gitBlobSha(data);
+            if (actual !== item.sha) {
+              throw new Error(
+                `Git blob mismatch for ${item.path}: expected ${item.sha} got ${actual}`
+              );
+            }
+
+            const dest = path.join(output, ...parts);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.writeFileSync(dest, data);
+            fs.chmodSync(dest, item.mode === '100755' ? 0o755 : 0o644);
+            seen.set(item.path, { sha: item.sha, mode: item.mode || '100644', commit: expectedCommit });
+          }
+
+          for (const packPath of [...basePacks, ...extraPacks]) {
+            const pack = JSON.parse(fs.readFileSync(packPath, 'utf8'));
+            if (pack.source_repo !== 'beamscale/bmscl-supervisor') {
+              throw new Error(`wrong source repo in ${packPath}`);
+            }
+            if (pack.source_commit !== baseCommit) {
+              throw new Error(`wrong base source commit in ${packPath}`);
+            }
+            for (const item of pack.files || []) {
+              install(item, baseCommit, false);
+            }
+          }
+
+          if (seen.size !== 140) {
+            throw new Error(`expected 140 base-tree files, reconstructed ${seen.size}`);
+          }
+
+          const overlay = JSON.parse(
+            fs.readFileSync('carrier/beamscale-supervisor-117/overlay.json', 'utf8')
+          );
+          if (overlay.source_repo !== 'beamscale/bmscl-supervisor') {
+            throw new Error('overlay source repository mismatch');
+          }
+          if (overlay.source_commit !== targetCommit) {
+            throw new Error('overlay source commit mismatch');
+          }
+          if (overlay.source_tree !== targetTree) {
+            throw new Error('overlay target tree mismatch');
+          }
+
+          const overlayPaths = [];
+          for (const item of overlay.files || []) {
+            install(item, targetCommit, true);
+            overlayPaths.push(item.path);
+          }
+
+          const expectedOverlay = [
+            'test/bmscl_provenance_tests.erl',
+            'test/bmscl_supervisor_tests.erl',
+          ].sort();
+          overlayPaths.sort();
+          if (JSON.stringify(overlayPaths) !== JSON.stringify(expectedOverlay)) {
+            throw new Error(`unexpected target overlay set: ${JSON.stringify(overlayPaths)}`);
+          }
+
+          process.stdout.write(JSON.stringify({
+            base_source_commit: baseCommit,
+            target_source_commit: targetCommit,
+            target_tree_sha: targetTree,
+            verified_files: seen.size,
+            overlay_files: overlayPaths,
+          }) + '\n');
+          NODE
           (
             cd source
             git init -q
