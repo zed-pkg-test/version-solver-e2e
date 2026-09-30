@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  LIVE_MUTEX_NODE_SHA: 31af071fdf124f5d3756f6a2d6b9bbe2ea86bf5c
-  LIVE_MUTEX_RUST_SHA: c93d049dae10f82edf9141636024de3ba3392133
+  LIVE_MUTEX_NODE_SHA: a265c9f0236a06f09752e4230f19fc2d6ae9b150
+  LIVE_MUTEX_RUST_SHA: 70920957f2472e1f50efc4636269c275472b37f4
 
 jobs:
   live-mutex-node-broker:
