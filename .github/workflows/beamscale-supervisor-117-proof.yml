@@ -168,6 +168,16 @@ jobs:
       - name: Compile
         working-directory: source
         run: rebar3 compile
+      - name: Emit generated Rebar lock
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f rebar.lock
+          printf '%s\n' '---BEGIN-REBAR-LOCK---'
+          cat rebar.lock
+          printf '%s\n' '---END-REBAR-LOCK---'
+          sha256sum rebar.lock
       - name: EUnit
         working-directory: source
         run: rebar3 eunit
