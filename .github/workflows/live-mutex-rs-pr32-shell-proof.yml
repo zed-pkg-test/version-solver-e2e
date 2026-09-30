@@ -1,0 +1,60 @@
+name: live-mutex-rs PR32 shell proof
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/live-mutex-rs-pr32-shell-proof.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      SOURCE_SHA: 5822f28154a33a57d7805607fad4559ed49c5e31
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact live-mutex-rs PR head
+        run: |
+          git clone --filter=blob:none https://github.com/ORESoftware/live-mutex-rs.git live-mutex-rs
+          git -C live-mutex-rs checkout --detach "$SOURCE_SHA"
+          test "$(git -C live-mutex-rs rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Prove shell source contract
+        working-directory: live-mutex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n clients/shell/live_mutex_client.sh clients/shell/smoke.sh
+          grep -Fq '"$$"' clients/shell/live_mutex_client.sh
+
+      - name: Build and start broker
+        working-directory: live-mutex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --no-default-features --bin dd-rust-network-mutex
+          ./target/release/dd-rust-network-mutex > broker.log 2>&1 &
+          echo $! > broker.pid
+          timeout 30 bash -c 'until (echo > /dev/tcp/127.0.0.1/6970) >/dev/null 2>&1; do sleep 1; done'
+
+      - name: Run Bash client smoke
+        working-directory: live-mutex-rs
+        shell: bash
+        run: bash clients/shell/smoke.sh
+
+      - name: Broker diagnostics
+        if: always()
+        working-directory: live-mutex-rs
+        shell: bash
+        run: |
+          cat broker.log || true
+          if test -f broker.pid; then
+            kill "$(cat broker.pid)" 2>/dev/null || true
+          fi
