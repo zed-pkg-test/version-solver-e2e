@@ -1,0 +1,42 @@
+name: Project registry evidence carrier
+
+on:
+  pull_request:
+    paths:
+      - 'carrier/project-registry-pr-78/**'
+      - 'tests/project-registry-evidence-carrier.test.mjs'
+      - 'scripts/emit-project-registry-certification.mjs'
+      - '.github/workflows/project-registry-evidence-carrier.yml'
+  push:
+    branches:
+      - certify-project-registry-pr-78
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout carrier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Verify exact mirrored source and semantics
+        run: node --test tests/project-registry-evidence-carrier.test.mjs
+      - name: Emit supplemental exact-head certification receipt
+        run: node scripts/emit-project-registry-certification.mjs
+      - name: Upload certification receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: project-registry-pr-78-certification
+          path: evidence/project-registry-pr-78-certification.json
+          if-no-files-found: error
+          retention-days: 30
