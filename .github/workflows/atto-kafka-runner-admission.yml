@@ -1,0 +1,27 @@
+name: Atto Kafka source-free alternate-org runner admission canary
+on:
+  push:
+    branches: ["validation/kafka-runner-probe-20261111"]
+permissions:
+  contents: read
+jobs:
+  admission:
+    name: runner admission only - no compiler/guest claims
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout isolated test branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Executed step receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "RUNNER_ADMISSION=EXECUTED_PASS"
+          echo "TEST_BRANCH_SHA=$GITHUB_SHA"
+          echo "TEST_BRANCH_TREE=$(git rev-parse 'HEAD^{tree}')"
+          java -version
+          echo "ATTO_KAFKA_COMPILER=NOT_EXECUTED"
+          echo "ATTO_KAFKA_GUEST=NOT_EXECUTED"
